@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="refresh" content="{{.Refresh}}">
+<meta name="robots" content="noindex">
+<title>DDNS Updater</title>
+<style>{{.CSS}}</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>DDNS Updater<small>{{.Info.Provider}} · {{len .Snapshot.Hosts}} hostname{{if ne (len .Snapshot.Hosts) 1}}s{{end}}</small></h1>
+    <span class="pill lg {{.Overall.Class}}">{{.Overall.Label}}</span>
+  </header>
+
+  <section>
+    <h2>Public IP</h2>
+    <div class="ips">
+      {{range .Snapshot.Families}}
+      <div class="ip">
+        <div class="label">{{if eq .Family "ipv4"}}IPv4{{else}}IPv6{{end}}</div>
+        <div class="addr">{{if .Address}}{{.Address}}{{else}}<span class="muted">unknown</span>{{end}}</div>
+        {{if .Error}}<div class="meta err">{{.Error}}</div>
+        {{else if not .ChangedAt.IsZero}}<div class="meta" title="{{stamp .ChangedAt}}">changed {{ago .ChangedAt}}</div>{{end}}
+      </div>
+      {{end}}
+    </div>
+  </section>
+
+  <section>
+    <h2>Hostnames</h2>
+    <div class="table">
+      <table>
+        <thead><tr><th>Hostname</th>{{if .Info.IPv4Enabled}}<th>IPv4 record</th>{{end}}{{if .Info.IPv6Enabled}}<th>IPv6 record</th>{{end}}<th>Status</th><th>Last update</th></tr></thead>
+        <tbody>
+          {{range .Hosts}}
+          <tr>
+            <td class="mono host">{{.Hostname}}</td>
+            {{if $.Info.IPv4Enabled}}<td class="mono" data-label="IPv4 record">{{or .IPv4 "—"}}</td>{{end}}
+            {{if $.Info.IPv6Enabled}}<td class="mono" data-label="IPv6 record">{{or .IPv6 "—"}}</td>{{end}}
+            <td data-label="Status">
+              <span class="pill {{.State.Class}}">{{.State.Label}}</span>
+              {{if .LastError}}<div class="error-text">{{.LastError}}{{if not .NextAttempt.IsZero}} · retry {{until .NextAttempt}}{{end}}</div>{{end}}
+            </td>
+            <td class="muted" data-label="Last update">{{if .LastUpdate.IsZero}}—{{else}}<span title="{{stamp .LastUpdate}}">{{ago .LastUpdate}}</span>{{end}}</td>
+          </tr>
+          {{end}}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <h2>Configuration</h2>
+    <dl>
+      <dt>Provider</dt><dd>{{.Info.Provider}}</dd>
+      <dt>Check interval</dt><dd>every {{duration .Info.Interval}}</dd>
+      <dt>DNS re-check</dt><dd>{{if .Info.DNSRecheckInterval}}every {{duration .Info.DNSRecheckInterval}}{{else}}at startup only{{end}}</dd>
+      {{if .Info.IPv4Enabled}}<dt>IPv4 sources</dt><dd class="mono">{{join .Info.IPv4Sources ", "}}</dd>{{end}}
+      {{if .Info.IPv6Enabled}}<dt>IPv6 sources</dt><dd class="mono">{{join .Info.IPv6Sources ", "}}</dd>{{end}}
+      {{if .Info.DryRun}}<dt>Mode</dt><dd><span class="pill warn">Dry run</span></dd>{{end}}
+    </dl>
+  </section>
+
+  <footer>
+    Last check {{if .Snapshot.LastCheck.IsZero}}pending{{else}}<span title="{{stamp .Snapshot.LastCheck}}">{{ago .Snapshot.LastCheck}}</span>{{end}}
+    · up {{duration .Uptime}} · <a href="https://github.com/brnl/docker-ddns-updater">docker-ddns-updater</a> {{.Info.Version}}
+  </footer>
+</main>
+</body>
+</html>
