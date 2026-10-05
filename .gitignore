@@ -1,0 +1,4 @@
+/ddns-updater
+/dist/
+*.tgz
+.env
