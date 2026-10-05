@@ -1,0 +1,14 @@
+apiVersion: v2
+name: ddns-updater
+description: Monitors your external IP address and updates DDNS records (mijn.host) when it changes
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - ddns
+  - dyndns
+  - dns
+  - mijn.host
+home: https://github.com/brnl/docker-ddns-updater
+sources:
+  - https://github.com/brnl/docker-ddns-updater

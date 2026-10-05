@@ -1,0 +1,139 @@
+{{- include "ddns-updater.validate" . }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "ddns-updater.fullname" . }}
+  labels:
+    {{- include "ddns-updater.labels" . | nindent 4 }}
+spec:
+  # Always exactly one replica: concurrent updaters would race each other.
+  replicas: 1
+  strategy:
+    type: Recreate
+  revisionHistoryLimit: {{ .Values.revisionHistoryLimit }}
+  selector:
+    matchLabels:
+      {{- include "ddns-updater.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- if or .Values.podAnnotations (not .Values.credentials.existingSecret) }}
+      annotations:
+        {{- if not .Values.credentials.existingSecret }}
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+        {{- end }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- end }}
+      labels:
+        {{- include "ddns-updater.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "ddns-updater.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if .Values.hostNetwork }}
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      {{- end }}
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: ddns-updater
+          image: {{ include "ddns-updater.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          env:
+            - name: DDNS_PROVIDER
+              value: {{ .Values.provider | quote }}
+            - name: DDNS_HOSTNAMES
+              value: {{ join "," .Values.hostnames | quote }}
+            - name: DDNS_USERNAME_FILE
+              value: /run/secrets/ddns/username
+            - name: DDNS_PASSWORD_FILE
+              value: /run/secrets/ddns/password
+            - name: DDNS_IPV4_ENABLED
+              value: {{ .Values.ipv4.enabled | quote }}
+            {{- with .Values.ipv4.sources }}
+            - name: DDNS_IPV4_SOURCES
+              value: {{ join "," . | quote }}
+            {{- end }}
+            - name: DDNS_IPV6_ENABLED
+              value: {{ .Values.ipv6.enabled | quote }}
+            {{- with .Values.ipv6.sources }}
+            - name: DDNS_IPV6_SOURCES
+              value: {{ join "," . | quote }}
+            {{- end }}
+            - name: DDNS_INTERVAL
+              value: {{ .Values.interval | quote }}
+            - name: DDNS_TIMEOUT
+              value: {{ .Values.timeout | quote }}
+            - name: DDNS_DNS_RECHECK_INTERVAL
+              value: {{ .Values.dnsRecheckInterval | quote }}
+            {{- with .Values.dnsServer }}
+            - name: DDNS_DNS_SERVER
+              value: {{ . | quote }}
+            {{- end }}
+            - name: DDNS_DRY_RUN
+              value: {{ .Values.dryRun | quote }}
+            - name: DDNS_LISTEN_ADDR
+              value: {{ printf ":%d" (int .Values.containerPort) | quote }}
+            - name: DDNS_STATUS_PAGE
+              value: {{ .Values.statusPage.enabled | quote }}
+            - name: DDNS_LOG_LEVEL
+              value: {{ .Values.log.level | quote }}
+            - name: DDNS_LOG_FORMAT
+              value: {{ .Values.log.format | quote }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.containerPort }}
+              protocol: TCP
+          {{- with .Values.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: credentials
+              mountPath: /run/secrets/ddns
+              readOnly: true
+      volumes:
+        - name: credentials
+          secret:
+            secretName: {{ include "ddns-updater.secretName" . }}
+            defaultMode: 0440
+            items:
+              - key: {{ .Values.credentials.usernameKey }}
+                path: username
+              - key: {{ .Values.credentials.passwordKey }}
+                path: password
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

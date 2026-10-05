@@ -1,0 +1,71 @@
+:root {
+  --bg: #f5f6f8; --card: #ffffff; --text: #1d2330; --muted: #677085; --border: #e3e6ec;
+  --ok: #138a52; --ok-bg: #e5f6ee; --warn: #a96500; --warn-bg: #fdf1dd; --err: #c22b38; --err-bg: #fce8ea;
+  --idle: #5c6577; --idle-bg: #eceef2; --accent: #3a5bd9;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0f1218; --card: #181c24; --text: #e6e9ef; --muted: #8d95a6; --border: #2a303c;
+    --ok: #4cd394; --ok-bg: #12301f; --warn: #f2b24c; --warn-bg: #33270f; --err: #ff7a85; --err-bg: #3a161b;
+    --idle: #a3abbb; --idle-bg: #232834; --accent: #8aa2ff;
+  }
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0; background: var(--bg); color: var(--text);
+  font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+main { max-width: 960px; margin: 0 auto; padding: 32px 16px 48px; }
+header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 24px; }
+h1 { font-size: 22px; margin: 0; letter-spacing: -0.01em; }
+h1 small { display: block; font-size: 13px; font-weight: 400; color: var(--muted); }
+h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin: 0 0 12px; font-weight: 600; }
+section { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 20px; margin-bottom: 16px; }
+.pill {
+  display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px;
+  font-size: 13px; font-weight: 600; white-space: nowrap;
+}
+.pill::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.pill.lg { font-size: 14px; padding: 6px 14px; }
+.ok { color: var(--ok); background: var(--ok-bg); }
+.warn { color: var(--warn); background: var(--warn-bg); }
+.err { color: var(--err); background: var(--err-bg); }
+.idle { color: var(--idle); background: var(--idle-bg); }
+.ips { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
+.ip { border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; min-width: 0; }
+.ip .label { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
+.ip .addr { font-family: var(--mono); font-size: 18px; margin: 4px 0 2px; overflow-wrap: anywhere; }
+.ip .meta { font-size: 13px; color: var(--muted); }
+.ip .meta.err { background: none; }
+.table { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-size: 14px; }
+th { text-align: left; font-weight: 600; color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; }
+th, td { padding: 10px 12px 10px 0; border-bottom: 1px solid var(--border); vertical-align: top; }
+tr:last-child td { border-bottom: 0; }
+.mono { font-family: var(--mono); font-size: 13px; overflow-wrap: anywhere; }
+.muted { color: var(--muted); }
+.error-text { color: var(--err); font-size: 13px; margin-top: 4px; overflow-wrap: anywhere; }
+dl { display: grid; grid-template-columns: max-content 1fr; gap: 8px 24px; margin: 0; font-size: 14px; }
+dt { color: var(--muted); }
+dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+footer { text-align: center; color: var(--muted); font-size: 13px; margin-top: 24px; }
+footer a { color: var(--accent); text-decoration: none; }
+@media (max-width: 560px) {
+  dl { grid-template-columns: 1fr; gap: 2px; }
+  dd { margin-bottom: 8px; }
+  thead { display: none; }
+  table, tbody, tr, td { display: block; }
+  tr { padding: 12px 0; border-bottom: 1px solid var(--border); }
+  tr:last-child { border-bottom: 0; }
+  td { border: 0; padding: 3px 0; display: flex; gap: 12px; align-items: baseline; }
+  td.host { font-size: 14px; font-weight: 600; padding-bottom: 6px; }
+  td[data-label]::before {
+    content: attr(data-label); flex: 0 0 104px; color: var(--muted); font-family: system-ui, sans-serif;
+    font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em;
+  }
+  td > div { flex-basis: 100%; }
+  td[data-label="Status"] { flex-wrap: wrap; }
+  td[data-label="Status"] .error-text { margin: 2px 0 0 116px; }
+}

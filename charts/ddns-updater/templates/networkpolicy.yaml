@@ -1,0 +1,39 @@
+{{- if .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "ddns-updater.fullname" . }}
+  labels:
+    {{- include "ddns-updater.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "ddns-updater.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    {{- if .Values.networkPolicy.ingressFrom }}
+    - from:
+        {{- toYaml .Values.networkPolicy.ingressFrom | nindent 8 }}
+      ports:
+        - port: http
+          protocol: TCP
+    {{- else }}
+    []
+    {{- end }}
+  egress:
+    # DNS (cluster DNS or dnsServer)
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    # IP sources and the provider API
+    - ports:
+        - port: 443
+          protocol: TCP
+    {{- with .Values.networkPolicy.extraEgress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+{{- end }}

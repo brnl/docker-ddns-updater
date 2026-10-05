@@ -1,0 +1,24 @@
+version: 2
+# Each ecosystem's updates are grouped into a single weekly PR.
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      github-actions:
+        patterns: ["*"]
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      docker:
+        patterns: ["*"]
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      gomod:
+        patterns: ["*"]

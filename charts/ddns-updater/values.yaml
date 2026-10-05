@@ -1,0 +1,154 @@
+# -- DDNS provider. Supported: mijnhost
+provider: mijnhost
+
+# -- Hostnames (FQDNs) to keep up to date. Required.
+hostnames: []
+#  - home.example.com
+
+# DynDNS credentials. Use either username/password (a Secret is created) or
+# existingSecret (recommended). They are mounted as files, not env variables.
+credentials:
+  username: ""
+  password: ""
+  # -- Name of an existing Secret holding the credentials.
+  existingSecret: ""
+  usernameKey: username
+  passwordKey: password
+
+ipv4:
+  enabled: true
+  # -- Plain-text IP sources; empty uses the built-in defaults
+  # (https://api.ipify.org, https://ifconfig.me/ip).
+  sources: []
+
+ipv6:
+  enabled: false
+  # -- Plain-text IP sources; empty uses the built-in defaults
+  # (https://api6.ipify.org, https://ifconfig.me/ip).
+  sources: []
+
+# -- How often to check the public IP address.
+interval: 10s
+# -- Timeout for each HTTP request.
+timeout: 10s
+# -- How often to compare the published DNS records with the detected IP
+# ("0" = only at startup).
+dnsRecheckInterval: 5m
+# -- DNS server for record lookups (e.g. "1.1.1.1"). Empty uses the cluster DNS.
+dnsServer: ""
+# -- Log what would be updated without calling the provider.
+dryRun: false
+
+log:
+  level: info # debug, info, warn, error
+  format: json # json, text
+
+# -- Serve the status page on "/" (health endpoints are always served).
+statusPage:
+  enabled: true
+
+# -- Additional environment variables for the container.
+extraEnv: []
+
+image:
+  repository: ghcr.io/brnl/docker-ddns-updater
+  # -- Defaults to the chart appVersion.
+  tag: ""
+  # -- Pin the image by digest (takes precedence over tag), e.g. "sha256:...".
+  digest: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# -- Use the node's network namespace. Useful for IPv6 when pods have no
+# global IPv6 egress, or when pod egress is NATed differently than the node.
+hostNetwork: false
+# -- HTTP port for the status page and health endpoints.
+containerPort: 8080
+
+service:
+  enabled: true
+  type: ClusterIP
+  port: 8080
+  annotations: {}
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: ddns.example.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+networkPolicy:
+  # -- Restrict traffic: egress only to DNS (53) and HTTPS (443); ingress only
+  # from the peers below.
+  enabled: false
+  # -- Peers allowed to reach the status page, e.g. your ingress controller.
+  ingressFrom: []
+  #  - namespaceSelector:
+  #      matchLabels:
+  #        kubernetes.io/metadata.name: ingress-nginx
+  # -- Extra egress rules (e.g. for http:// IP sources on port 80).
+  extraEgress: []
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  privileged: false
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  capabilities:
+    drop:
+      - ALL
+
+resources:
+  requests:
+    cpu: 10m
+    memory: 16Mi
+  limits:
+    memory: 64Mi
+
+livenessProbe:
+  httpGet:
+    path: /healthz
+    port: http
+  initialDelaySeconds: 5
+  periodSeconds: 30
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+# Uses /healthz rather than /readyz so the status page stays reachable while
+# updates are failing.
+readinessProbe:
+  httpGet:
+    path: /healthz
+    port: http
+  periodSeconds: 10
+  timeoutSeconds: 5
+
+priorityClassName: ""
+nodeSelector: {}
+tolerations: []
+affinity: {}
+revisionHistoryLimit: 3
