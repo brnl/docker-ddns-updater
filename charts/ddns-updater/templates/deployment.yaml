@@ -16,10 +16,13 @@ spec:
       {{- include "ddns-updater.selectorLabels" . | nindent 6 }}
   template:
     metadata:
-      {{- if or .Values.podAnnotations (not .Values.credentials.existingSecret) }}
+      {{- $source := include "ddns-updater.credentialsSource" . }}
+      {{- if or .Values.podAnnotations (ne $source "existing") }}
       annotations:
-        {{- if not .Values.credentials.existingSecret }}
+        {{- if eq $source "chart" }}
         checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+        {{- else if eq $source "external" }}
+        checksum/externalsecret: {{ include (print $.Template.BasePath "/externalsecret.yaml") . | sha256sum }}
         {{- end }}
         {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}

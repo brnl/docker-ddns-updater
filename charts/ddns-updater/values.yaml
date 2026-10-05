@@ -15,6 +15,25 @@ credentials:
   usernameKey: username
   passwordKey: password
 
+# Let External Secrets Operator (https://external-secrets.io) create the
+# credentials Secret from your secret backend. Mutually exclusive with
+# credentials.existingSecret; the Secret keys follow credentials.*Key.
+externalSecret:
+  enabled: false
+  apiVersion: external-secrets.io/v1
+  refreshInterval: 1h
+  secretStoreRef:
+    kind: ClusterSecretStore # or SecretStore
+    name: ""
+  # Remote references; "property" and "version" are optional.
+  username:
+    key: ""
+    property: ""
+  password:
+    key: ""
+    property: ""
+  annotations: {}
+
 ipv4:
   enabled: true
   # -- Plain-text IP sources; empty uses the built-in defaults
@@ -49,6 +68,11 @@ statusPage:
 
 # -- Additional environment variables for the container.
 extraEnv: []
+
+# -- Extra Kubernetes manifests to deploy with the release. Each item is an
+# object or a YAML string, rendered with tpl so it may use template
+# expressions such as {{ include "ddns-updater.fullname" . }}.
+extraObjects: []
 
 image:
   repository: ghcr.io/brnl/docker-ddns-updater

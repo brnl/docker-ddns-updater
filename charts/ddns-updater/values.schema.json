@@ -2,65 +2,229 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "type": "object",
   "properties": {
-    "provider": { "type": "string", "enum": ["mijnhost"] },
+    "provider": {
+      "type": "string",
+      "enum": [
+        "mijnhost"
+      ]
+    },
     "hostnames": {
       "type": "array",
-      "items": { "type": "string", "pattern": "^(\\*\\.)?([A-Za-z0-9_]([A-Za-z0-9_-]{0,61}[A-Za-z0-9_])?\\.)+[A-Za-z0-9_]([A-Za-z0-9_-]{0,61}[A-Za-z0-9_])?\\.?$" }
+      "items": {
+        "type": "string",
+        "pattern": "^(\\*\\.)?([A-Za-z0-9_]([A-Za-z0-9_-]{0,61}[A-Za-z0-9_])?\\.)+[A-Za-z0-9_]([A-Za-z0-9_-]{0,61}[A-Za-z0-9_])?\\.?$"
+      }
     },
     "credentials": {
       "type": "object",
       "properties": {
-        "username": { "type": "string" },
-        "password": { "type": "string" },
-        "existingSecret": { "type": "string" },
-        "usernameKey": { "type": "string", "minLength": 1 },
-        "passwordKey": { "type": "string", "minLength": 1 }
+        "username": {
+          "type": "string"
+        },
+        "password": {
+          "type": "string"
+        },
+        "existingSecret": {
+          "type": "string"
+        },
+        "usernameKey": {
+          "type": "string",
+          "minLength": 1
+        },
+        "passwordKey": {
+          "type": "string",
+          "minLength": 1
+        }
       }
     },
-    "ipv4": { "$ref": "#/definitions/family" },
-    "ipv6": { "$ref": "#/definitions/family" },
-    "interval": { "$ref": "#/definitions/duration" },
-    "timeout": { "$ref": "#/definitions/duration" },
-    "dnsRecheckInterval": { "$ref": "#/definitions/duration" },
-    "dnsServer": { "type": "string" },
-    "dryRun": { "type": "boolean" },
+    "ipv4": {
+      "$ref": "#/definitions/family"
+    },
+    "ipv6": {
+      "$ref": "#/definitions/family"
+    },
+    "interval": {
+      "$ref": "#/definitions/duration"
+    },
+    "timeout": {
+      "$ref": "#/definitions/duration"
+    },
+    "dnsRecheckInterval": {
+      "$ref": "#/definitions/duration"
+    },
+    "dnsServer": {
+      "type": "string"
+    },
+    "dryRun": {
+      "type": "boolean"
+    },
     "log": {
       "type": "object",
       "properties": {
-        "level": { "type": "string", "enum": ["debug", "info", "warn", "error"] },
-        "format": { "type": "string", "enum": ["json", "text"] }
+        "level": {
+          "type": "string",
+          "enum": [
+            "debug",
+            "info",
+            "warn",
+            "error"
+          ]
+        },
+        "format": {
+          "type": "string",
+          "enum": [
+            "json",
+            "text"
+          ]
+        }
       }
     },
     "statusPage": {
       "type": "object",
-      "properties": { "enabled": { "type": "boolean" } }
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        }
+      }
     },
-    "extraEnv": { "type": "array" },
+    "extraEnv": {
+      "type": "array"
+    },
     "image": {
       "type": "object",
       "properties": {
-        "repository": { "type": "string", "minLength": 1 },
-        "tag": { "type": "string" },
-        "digest": { "type": "string", "pattern": "^(sha256:[a-f0-9]{64})?$" },
-        "pullPolicy": { "type": "string", "enum": ["Always", "IfNotPresent", "Never"] }
+        "repository": {
+          "type": "string",
+          "minLength": 1
+        },
+        "tag": {
+          "type": "string"
+        },
+        "digest": {
+          "type": "string",
+          "pattern": "^(sha256:[a-f0-9]{64})?$"
+        },
+        "pullPolicy": {
+          "type": "string",
+          "enum": [
+            "Always",
+            "IfNotPresent",
+            "Never"
+          ]
+        }
       }
     },
-    "hostNetwork": { "type": "boolean" },
-    "containerPort": { "type": "integer", "minimum": 1, "maximum": 65535 },
+    "hostNetwork": {
+      "type": "boolean"
+    },
+    "containerPort": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 65535
+    },
     "service": {
       "type": "object",
       "properties": {
-        "enabled": { "type": "boolean" },
-        "type": { "type": "string", "enum": ["ClusterIP", "NodePort", "LoadBalancer"] },
-        "port": { "type": "integer", "minimum": 1, "maximum": 65535 }
+        "enabled": {
+          "type": "boolean"
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "ClusterIP",
+            "NodePort",
+            "LoadBalancer"
+          ]
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        }
       }
     },
     "networkPolicy": {
       "type": "object",
       "properties": {
-        "enabled": { "type": "boolean" },
-        "ingressFrom": { "type": "array" },
-        "extraEgress": { "type": "array" }
+        "enabled": {
+          "type": "boolean"
+        },
+        "ingressFrom": {
+          "type": "array"
+        },
+        "extraEgress": {
+          "type": "array"
+        }
+      }
+    },
+    "externalSecret": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "apiVersion": {
+          "type": "string",
+          "pattern": "^external-secrets\\.io/v[0-9a-z]+$"
+        },
+        "refreshInterval": {
+          "$ref": "#/definitions/duration"
+        },
+        "secretStoreRef": {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "SecretStore",
+                "ClusterSecretStore"
+              ]
+            },
+            "name": {
+              "type": "string"
+            }
+          }
+        },
+        "username": {
+          "type": "object",
+          "properties": {
+            "key": {
+              "type": "string"
+            },
+            "property": {
+              "type": "string"
+            },
+            "version": {
+              "type": "string"
+            }
+          }
+        },
+        "password": {
+          "type": "object",
+          "properties": {
+            "key": {
+              "type": "string"
+            },
+            "property": {
+              "type": "string"
+            },
+            "version": {
+              "type": "string"
+            }
+          }
+        },
+        "annotations": {
+          "type": "object"
+        }
+      }
+    },
+    "extraObjects": {
+      "type": "array",
+      "items": {
+        "type": [
+          "object",
+          "string"
+        ]
       }
     }
   },
@@ -68,12 +232,23 @@
     "family": {
       "type": "object",
       "properties": {
-        "enabled": { "type": "boolean" },
-        "sources": { "type": "array", "items": { "type": "string", "pattern": "^https?://" } }
+        "enabled": {
+          "type": "boolean"
+        },
+        "sources": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^https?://"
+          }
+        }
       }
     },
     "duration": {
-      "type": ["string", "integer"],
+      "type": [
+        "string",
+        "integer"
+      ],
       "pattern": "^([0-9]+|([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
     }
   }

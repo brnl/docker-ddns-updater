@@ -51,13 +51,39 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 {{- end }}
 
+{{/*
+Where the credentials Secret comes from: "existing" (credentials.existingSecret),
+"external" (an ExternalSecret rendered by this chart) or "chart" (a Secret
+rendered by this chart from credentials.username/password).
+*/}}
+{{- define "ddns-updater.credentialsSource" -}}
+{{- if .Values.credentials.existingSecret }}existing
+{{- else if .Values.externalSecret.enabled }}external
+{{- else }}chart
+{{- end }}
+{{- end }}
+
 {{- define "ddns-updater.validate" -}}
 {{- if not .Values.hostnames }}
 {{- fail "hostnames: at least one hostname is required" }}
 {{- end }}
-{{- if not .Values.credentials.existingSecret }}
+{{- $source := include "ddns-updater.credentialsSource" . }}
+{{- if and .Values.credentials.existingSecret .Values.externalSecret.enabled }}
+{{- fail "credentials.existingSecret and externalSecret.enabled are mutually exclusive" }}
+{{- end }}
+{{- if eq $source "external" }}
+{{- with .Values.externalSecret }}
+{{- if not .secretStoreRef.name }}
+{{- fail "externalSecret.secretStoreRef.name is required" }}
+{{- end }}
+{{- if or (not .username.key) (not .password.key) }}
+{{- fail "externalSecret: username.key and password.key are required" }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- if eq $source "chart" }}
 {{- if or (not .Values.credentials.username) (not .Values.credentials.password) }}
-{{- fail "credentials: set credentials.existingSecret, or both credentials.username and credentials.password" }}
+{{- fail "credentials: set credentials.existingSecret, enable externalSecret, or set both credentials.username and credentials.password" }}
 {{- end }}
 {{- end }}
 {{- if not (or .Values.ipv4.enabled .Values.ipv6.enabled) }}
