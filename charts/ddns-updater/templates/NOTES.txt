@@ -1,0 +1,17 @@
+ddns-updater is keeping these hostnames up to date via {{ .Values.provider }}:
+{{- range .Values.hostnames }}
+  - {{ . }}
+{{- end }}
+
+Follow the logs:
+  kubectl logs -n {{ .Release.Namespace }} deploy/{{ include "ddns-updater.fullname" . }} -f
+{{- if and .Values.statusPage.enabled .Values.service.enabled }}
+
+Open the status page:
+  kubectl port-forward -n {{ .Release.Namespace }} svc/{{ include "ddns-updater.fullname" . }} {{ .Values.service.port }}
+  then browse to http://127.0.0.1:{{ .Values.service.port }}/
+{{- end }}
+{{- if .Values.dryRun }}
+
+DRY RUN is enabled: no DNS records will be changed.
+{{- end }}
