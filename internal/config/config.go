@@ -4,6 +4,8 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net"
+	"net/netip"
 	"net/url"
 	"os"
 	"strconv"
@@ -38,6 +40,7 @@ type Config struct {
 	DryRun     bool
 	ListenAddr string
 	StatusPage bool
+	Metrics    bool
 	LogLevel   string
 	LogFormat  string
 }
@@ -55,13 +58,14 @@ func Load(lookup func(string) (string, bool)) (*Config, error) {
 		IPv6Enabled:        e.bool("DDNS_IPV6_ENABLED", false),
 		IPv4Sources:        e.list("DDNS_IPV4_SOURCES", DefaultIPv4Sources),
 		IPv6Sources:        e.list("DDNS_IPV6_SOURCES", DefaultIPv6Sources),
-		Interval:           e.duration("DDNS_INTERVAL", 10*time.Second),
+		Interval:           e.duration("DDNS_INTERVAL", time.Minute),
 		Timeout:            e.duration("DDNS_TIMEOUT", 10*time.Second),
 		DNSRecheckInterval: e.duration("DDNS_DNS_RECHECK_INTERVAL", 5*time.Minute),
 		DNSServer:          e.str("DDNS_DNS_SERVER", ""),
 		DryRun:             e.bool("DDNS_DRY_RUN", false),
 		ListenAddr:         e.str("DDNS_LISTEN_ADDR", ":8080"),
 		StatusPage:         e.bool("DDNS_STATUS_PAGE", true),
+		Metrics:            e.bool("DDNS_METRICS", true),
 		LogLevel:           strings.ToLower(e.str("DDNS_LOG_LEVEL", "info")),
 		LogFormat:          strings.ToLower(e.str("DDNS_LOG_FORMAT", "json")),
 	}
@@ -110,6 +114,13 @@ func (c *Config) validate() error {
 	if c.Timeout <= 0 {
 		errs = append(errs, errors.New("DDNS_TIMEOUT must be positive"))
 	}
+	if c.DNSServer != "" {
+		addr, err := NormalizeDNSServer(c.DNSServer)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("DDNS_DNS_SERVER: %w", err))
+		}
+		c.DNSServer = addr
+	}
 	if c.DNSRecheckInterval < 0 {
 		errs = append(errs, errors.New("DDNS_DNS_RECHECK_INTERVAL must not be negative"))
 	}
@@ -124,6 +135,26 @@ func (c *Config) validate() error {
 		errs = append(errs, fmt.Errorf("DDNS_LOG_FORMAT: invalid format %q", c.LogFormat))
 	}
 	return errors.Join(errs...)
+}
+
+// NormalizeDNSServer turns a DNS server given as an IP address or hostname,
+// with an optional port, into a host:port dial address (default port 53).
+// Accepted: "1.1.1.1", "1.1.1.1:5353", "2606:4700:4700::1111",
+// "[2606:4700:4700::1111]:53", "dns.example.net", "dns.example.net:53".
+func NormalizeDNSServer(s string) (string, error) {
+	host, port := s, "53"
+	if h, p, err := net.SplitHostPort(s); err == nil {
+		host, port = h, p
+	} else if _, perr := netip.ParseAddr(strings.Trim(s, "[]")); perr == nil {
+		host = strings.Trim(s, "[]") // bare IPv6 address without port
+	}
+	if n, err := strconv.Atoi(port); err != nil || n < 1 || n > 65535 {
+		return "", fmt.Errorf("invalid port in %q", s)
+	}
+	if _, err := netip.ParseAddr(host); err != nil && !validHostname(host) && host != "localhost" {
+		return "", fmt.Errorf("%q is not an IP address or hostname", s)
+	}
+	return net.JoinHostPort(host, port), nil
 }
 
 func validateSources(name string, sources []string) []error {

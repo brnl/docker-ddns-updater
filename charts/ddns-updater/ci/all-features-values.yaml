@@ -1,0 +1,52 @@
+hostnames:
+  - home.example.com
+  - "*.example.org"
+ipv6:
+  enabled: true
+dnsServer: dns.quad9.net
+externalSecret:
+  enabled: true
+  secretStoreRef:
+    name: store
+  username:
+    key: ddns/mijnhost
+    property: username
+  password:
+    key: ddns/mijnhost
+    property: password
+metrics:
+  serviceMonitor:
+    enabled: true
+    labels:
+      release: kube-prometheus-stack
+  prometheusRule:
+    enabled: true
+    additionalRules:
+      - alert: Example
+        expr: vector(0) > 1
+ingress:
+  enabled: true
+httpRoute:
+  enabled: true
+  parentRefs:
+    - name: gateway
+      namespace: gateway-system
+  hostnames:
+    - ddns.example.local
+networkPolicy:
+  enabled: true
+extraObjects:
+  - apiVersion: v1
+    kind: ConfigMap
+    metadata:
+      name: '{{ include "ddns-updater.fullname" . }}-extra'
+  - |
+    apiVersion: policy/v1
+    kind: PodDisruptionBudget
+    metadata:
+      name: {{ .Release.Name }}-pdb
+    spec:
+      maxUnavailable: 1
+      selector:
+        matchLabels:
+          {{- include "ddns-updater.selectorLabels" . | nindent 10 }}

@@ -1,0 +1,5 @@
+hostnames:
+  - home.example.com
+credentials:
+  username: user
+  password: pass

@@ -29,32 +29,40 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
       - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
         with:
           version: v4.3.0
+      - name: Chart version
+        run: |
+          version=$(./hack/chart-version.sh)
+          if git ls-remote --exit-code --tags origin "refs/tags/v${version}" >/dev/null; then
+            echo "::notice title=No release::v${version} already exists; bump the version in Chart.yaml to release this change."
+          else
+            echo "::notice title=Release::Merging to main releases v${version}."
+          fi
       - name: helm lint
         run: |
-          helm lint charts/ddns-updater \
-            --set hostnames[0]=home.example.com \
-            --set credentials.username=user --set credentials.password=pass
-      - name: helm template (all features)
+          for f in charts/ddns-updater/ci/*-values.yaml; do
+            helm lint --strict charts/ddns-updater -f "$f"
+          done
+      - name: Schema rejects unknown keys
         run: |
-          helm template test charts/ddns-updater \
-            --set hostnames[0]=home.example.com \
-            --set credentials.existingSecret=ddns \
-            --set ipv6.enabled=true \
-            --set networkPolicy.enabled=true \
-            --set ingress.enabled=true > /dev/null
-      - name: helm template (externalSecret + extraObjects)
+          if helm template test charts/ddns-updater -f charts/ddns-updater/ci/default-values.yaml \
+               --set dnsserver=1.1.1.1 >/dev/null 2>&1; then
+            echo "::error::values.schema.json accepted an unknown key"
+            exit 1
+          fi
+      - name: kubeconform
         run: |
-          helm template test charts/ddns-updater \
-            --set hostnames[0]=home.example.com \
-            --set externalSecret.enabled=true \
-            --set externalSecret.secretStoreRef.name=store \
-            --set externalSecret.username.key=ddns --set externalSecret.username.property=username \
-            --set externalSecret.password.key=ddns --set externalSecret.password.property=password \
-            --set-json 'extraObjects=[{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"{{ .Release.Name }}-extra"}}]' \
-            | grep -q "kind: ExternalSecret"
+          for f in charts/ddns-updater/ci/*-values.yaml; do
+            helm template test charts/ddns-updater -f "$f"
+          done | go run github.com/yannh/kubeconform/cmd/kubeconform@v0.8.0 \
+            -strict -summary -kubernetes-version 1.34.0 \
+            -schema-location default \
+            -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'
 
   docker:
     runs-on: ubuntu-latest

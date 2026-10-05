@@ -86,6 +86,22 @@ rendered by this chart from credentials.username/password).
 {{- fail "credentials: set credentials.existingSecret, enable externalSecret, or set both credentials.username and credentials.password" }}
 {{- end }}
 {{- end }}
+{{- with .Values.metrics }}
+{{- if and (or .serviceMonitor.enabled .prometheusRule.enabled) (not .enabled) }}
+{{- fail "metrics.serviceMonitor and metrics.prometheusRule require metrics.enabled" }}
+{{- end }}
+{{- end }}
+{{- if and .Values.metrics.serviceMonitor.enabled (not .Values.service.enabled) }}
+{{- fail "metrics.serviceMonitor.enabled requires service.enabled" }}
+{{- end }}
+{{- if .Values.httpRoute.enabled }}
+{{- if not .Values.service.enabled }}
+{{- fail "httpRoute.enabled requires service.enabled" }}
+{{- end }}
+{{- if not .Values.httpRoute.parentRefs }}
+{{- fail "httpRoute.parentRefs is required when httpRoute.enabled" }}
+{{- end }}
+{{- end }}
 {{- if not (or .Values.ipv4.enabled .Values.ipv6.enabled) }}
 {{- fail "at least one of ipv4.enabled or ipv6.enabled must be true" }}
 {{- end }}

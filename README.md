@@ -11,7 +11,7 @@ Supported providers:
 
 ## Features
 
-- Checks the public IP every 10 seconds (configurable) using
+- Checks the public IP every minute (configurable) using
   [ipify](https://www.ipify.org) and [ifconfig.me](https://ifconfig.me).
 - IPv4 and IPv6 are both optional and can be enabled independently.
 - Only calls the provider when something changed: the detected IP is compared
@@ -21,8 +21,12 @@ Supported providers:
   agree; a single faulty or compromised source cannot redirect your DNS.
 - Backs off exponentially on errors, and for an hour on permanent errors such
   as bad credentials or an unknown hostname, so you won't be flagged for abuse.
-- A built-in **status page** plus `/healthz`, `/readyz` and `/status.json`.
-- A small, hardened image (~19 MB): a static Go 1.27 binary with no third-party
+- Ignores split-horizon DNS answers: only public addresses count as the
+  published record.
+- A built-in **status page**, Prometheus **metrics** with an optional
+  ServiceMonitor and alerting rules, and `/healthz`, `/readyz` and
+  `/status.json`.
+- A small, hardened image (~21 MB): a static Go 1.27 binary with no third-party
   dependencies on [distroless](https://github.com/GoogleContainerTools/distroless),
   with no shell. It runs as non-root on a read-only root filesystem with no
   capabilities. Released images are multi-arch (amd64, arm64, armv7), signed
@@ -85,6 +89,40 @@ helm install ddns-updater oci://ghcr.io/brnl/charts/ddns-updater \
 
 From a checkout, use `charts/ddns-updater` instead of the OCI reference.
 
+Notable values (see [`values.yaml`](charts/ddns-updater/values.yaml) for all):
+
+| Value | Default | Description |
+| ----- | ------- | ----------- |
+| `hostnames` | `[]` | Hostnames to update (required) |
+| `credentials.existingSecret` | `""` | Existing Secret with `username`/`password` keys (recommended) |
+| `credentials.username` / `.password` | `""` | Or let the chart create the Secret |
+| `externalSecret.enabled` | `false` | Let External Secrets Operator create the Secret (see below) |
+| `extraObjects` | `[]` | Extra manifests to deploy with the release (see below) |
+| `ipv4.enabled` / `ipv6.enabled` | `true` / `false` | Address families to manage |
+| `interval` | `60s` | How often to check the public IP |
+| `dnsRecheckInterval` | `5m` | How often to compare with the published DNS record |
+| `dnsServer` | `""` | DNS server for record lookups; set it with split-horizon DNS (see below) |
+| `hostNetwork` | `false` | Use the node's network (see below) |
+| `statusPage.enabled` | `true` | Serve the status page |
+| `metrics.enabled` | `true` | Serve Prometheus metrics on `/metrics` |
+| `metrics.serviceMonitor.enabled` / `metrics.prometheusRule.enabled` | `false` | Prometheus Operator resources (see below) |
+| `ingress.enabled` | `false` | Expose the status page through an Ingress |
+| `httpRoute.enabled` | `false` | Expose the status page through a Gateway API HTTPRoute (`httpRoute.parentRefs` required) |
+| `networkPolicy.enabled` | `false` | Allow only DNS and HTTPS egress, and ingress from `networkPolicy.ingressFrom` |
+
+The values are validated against a strict schema, so a typo such as
+`dnsserver:` fails the install instead of being silently ignored.
+
+The chart always runs a single replica with the `Recreate` strategy, because
+concurrent updaters would race each other. Credentials are mounted as files,
+not exposed as environment variables. No service account token is mounted. Pods
+use the `restricted` Pod Security Standard settings: non-root, read-only root
+filesystem, all capabilities dropped and the `RuntimeDefault` seccomp profile.
+
+**IPv6 on Kubernetes:** the pod detects the address its own traffic leaves
+from. If pods have no global IPv6 egress, or their egress is NATed to an
+address other than the one you want published, set `hostNetwork: true`.
+
 ### External Secrets Operator
 
 Instead of creating the Secret yourself, the chart can render an
@@ -126,32 +164,49 @@ extraObjects:
       release: "{{ .Release.Name }}"
 ```
 
-Notable values (see [`values.yaml`](charts/ddns-updater/values.yaml) for all):
+### Monitoring
 
-| Value | Default | Description |
-| ----- | ------- | ----------- |
-| `hostnames` | `[]` | Hostnames to update (required) |
-| `credentials.existingSecret` | `""` | Existing Secret with `username`/`password` keys (recommended) |
-| `credentials.username` / `.password` | `""` | Or let the chart create the Secret |
-| `externalSecret.enabled` | `false` | Let External Secrets Operator create the Secret (see below) |
-| `extraObjects` | `[]` | Extra manifests to deploy with the release (see below) |
-| `ipv4.enabled` / `ipv6.enabled` | `true` / `false` | Address families to manage |
-| `interval` | `10s` | How often to check the public IP |
-| `dnsRecheckInterval` | `5m` | How often to compare with the published DNS record |
-| `hostNetwork` | `false` | Use the node's network (see below) |
-| `statusPage.enabled` | `true` | Serve the status page |
-| `ingress.enabled` | `false` | Expose the status page through an Ingress |
-| `networkPolicy.enabled` | `false` | Allow only DNS and HTTPS egress, and ingress from `networkPolicy.ingressFrom` |
+The app serves Prometheus metrics on `/metrics`. With the Prometheus Operator
+(for example kube-prometheus-stack), enable the ServiceMonitor and the alerting
+rules:
 
-The chart always runs a single replica with the `Recreate` strategy, because
-concurrent updaters would race each other. Credentials are mounted as files,
-not exposed as environment variables. No service account token is mounted. Pods
-use the `restricted` Pod Security Standard settings: non-root, read-only root
-filesystem, all capabilities dropped and the `RuntimeDefault` seccomp profile.
+```yaml
+metrics:
+  serviceMonitor:
+    enabled: true
+    labels:
+      release: kube-prometheus-stack # only if your Prometheus selects on it
+  prometheusRule:
+    enabled: true
+```
 
-**IPv6 on Kubernetes:** the pod detects the address its own traffic leaves
-from. If pods have no global IPv6 egress, or their egress is NATed to an
-address other than the one you want published, set `hostNetwork: true`.
+The built-in alerts are:
+
+| Alert | Fires when |
+| ----- | ---------- |
+| `DDNSUpdaterDown` | the pod cannot be scraped for 10 minutes |
+| `DDNSUpdaterHostOutOfSync` | a record has not matched the public IP for `outOfSyncFor` (30m), e.g. because updates keep failing |
+| `DDNSUpdaterIPDetectionFailing` | the public IP could not be determined for `detectionFailingFor` (15m) |
+| `DDNSUpdaterSplitHorizonDNS` | DNS lookups return only internal addresses for an hour (info) |
+
+Add your own rules with `metrics.prometheusRule.additionalRules`. With
+`networkPolicy.enabled`, add Prometheus to `networkPolicy.ingressFrom`.
+
+The readiness probe deliberately uses `/healthz`, so the status page stays
+reachable while updates fail. Use the metrics and alerts above, or `/readyz`,
+to detect failing updates.
+
+### Split-horizon DNS
+
+If the cluster resolves your hostnames to internal addresses (split-horizon
+DNS), those answers say nothing about the public record. The updater ignores
+DNS answers that contain only non-public addresses, logs a warning and shows
+it on the status page. Point `dnsServer` at a public resolver so the record can
+be verified:
+
+```yaml
+dnsServer: 1.1.1.1 # or a hostname such as dns.quad9.net, optionally with :port
+```
 
 ## Configuration
 
@@ -167,13 +222,14 @@ All settings are environment variables.
 | `DDNS_IPV6_ENABLED` | `false` | Manage the AAAA record |
 | `DDNS_IPV4_SOURCES` | `https://api.ipify.org,https://ifconfig.me/ip` | Plain-text IPv4 sources |
 | `DDNS_IPV6_SOURCES` | `https://api6.ipify.org,https://ifconfig.me/ip` | Plain-text IPv6 sources |
-| `DDNS_INTERVAL` | `10s` | Check interval (`30`, `30s`, `1m`, ...) |
+| `DDNS_INTERVAL` | `60s` | Check interval (`30`, `30s`, `1m`, ...). Each check queries every source, so don't go much lower than 30s |
 | `DDNS_TIMEOUT` | `10s` | Timeout per HTTP request |
 | `DDNS_DNS_RECHECK_INTERVAL` | `5m` | How often to compare with the published DNS record (`0` = only at startup) |
-| `DDNS_DNS_SERVER` | system resolver | DNS server for record lookups, e.g. `1.1.1.1` |
+| `DDNS_DNS_SERVER` | system resolver | DNS server for record lookups: an IP address or hostname with an optional port, e.g. `1.1.1.1`, `dns.quad9.net` or `[2606:4700:4700::1111]:53` |
 | `DDNS_DRY_RUN` | `false` | Log what would be updated without calling the provider |
 | `DDNS_LISTEN_ADDR` | `:8080` | Address for the status page and health endpoints (`off` disables it) |
 | `DDNS_STATUS_PAGE` | `true` | Serve the status page on `/` and `/status.json` |
+| `DDNS_METRICS` | `true` | Serve Prometheus metrics on `/metrics` |
 | `DDNS_LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error` |
 | `DDNS_LOG_FORMAT` | `json` | `json` or `text` |
 
@@ -187,7 +243,8 @@ On every interval, for each enabled family:
    answered returned the same public (globally routable) address.
 2. For each hostname, compare the address with the last known record. The
    last known record comes from a DNS lookup at startup and every
-   `DDNS_DNS_RECHECK_INTERVAL`, and from each successful update.
+   `DDNS_DNS_RECHECK_INTERVAL`, and from each successful update. DNS answers
+   that contain only non-public addresses (split-horizon DNS) are ignored.
 3. If anything differs, send one update containing every detected family.
 
 ### mijn.host
@@ -207,19 +264,20 @@ success. `badauth`, `nohost`, `notfqdn` and `abuse` are permanent errors and
 pause updates for that hostname for an hour. `911` and `dnserr` are retried
 with exponential backoff.
 
-## Status page
+## Status page and endpoints
 
 `GET /` shows the detected public IPs, the state of each hostname, the last
 error and the configuration. It is a single server-rendered HTML page with no
 JavaScript and no external resources, and it is served with a strict
 Content-Security-Policy. It never shows credentials, but it does reveal your
 public IP and hostnames, so don't expose it publicly without authentication.
-Set `DDNS_STATUS_PAGE=false` to serve only the health endpoints.
+Set `DDNS_STATUS_PAGE=false` to serve only the health and metrics endpoints.
 
 | Endpoint | Description |
 | -------- | ----------- |
 | `/` | Status page (auto-refreshes) |
 | `/status.json` | The same data as JSON |
+| `/metrics` | Prometheus metrics |
 | `/healthz` | Liveness: the check loop is running |
 | `/readyz` | Readiness: the last check cycle fully succeeded |
 
@@ -231,10 +289,21 @@ is no shell or curl in the image.
 ```sh
 go test -race ./...
 docker build -t ddns-updater:dev .
-helm lint charts/ddns-updater --set hostnames[0]=a.example.com \
-  --set credentials.username=u --set credentials.password=p
+helm lint --strict charts/ddns-updater -f charts/ddns-updater/ci/all-features-values.yaml
 ```
 
-Images are published to `ghcr.io/brnl/docker-ddns-updater` on every push to
-`main` (as `edge`) and on `v*` tags (as `X.Y.Z`, `X.Y`, `X` and `latest`). Tags
-also publish the Helm chart to `oci://ghcr.io/brnl/charts/ddns-updater`.
+## Releasing
+
+`version` in [`Chart.yaml`](charts/ddns-updater/Chart.yaml) is the single
+source of truth for the chart version, the image tag and the git tag, and
+`appVersion` must equal it (CI enforces both). To release, bump both in a pull
+request following [semantic versioning](https://semver.org). When it is merged
+into `main`, the release workflow:
+
+1. publishes the image as `X.Y.Z`, `X.Y`, `X` and `latest` (plus `edge`),
+   signed with cosign;
+2. publishes the signed chart to `oci://ghcr.io/brnl/charts/ddns-updater`;
+3. tags the commit `vX.Y.Z` and creates a GitHub release.
+
+Don't create tags by hand. Pushes to `main` that don't change the version only
+publish the `edge` image.

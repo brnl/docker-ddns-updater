@@ -249,3 +249,72 @@ func TestSnapshot(t *testing.T) {
 		t.Fatalf("host = %+v", h)
 	}
 }
+
+func TestSplitHorizonDNSIsIgnored(t *testing.T) {
+	f := newFixture(time.Minute, ipdetect.IPv4)
+	ctx := context.Background()
+
+	// The record is correct, so nothing should be sent.
+	f.res.records["ip4"] = []netip.Addr{ip("203.0.113.1")}
+	f.u.Check(ctx)
+	if len(f.prov.reqs) != 0 {
+		t.Fatalf("unexpected update: %v", f.prov.reqs)
+	}
+
+	// The resolver switches to an internal view: the private answer must not
+	// replace the known public record (and must not trigger an update).
+	f.res.records["ip4"] = []netip.Addr{ip("192.168.1.10")}
+	f.clk.add(61 * time.Second)
+	f.u.Check(ctx)
+	if len(f.prov.reqs) != 0 {
+		t.Fatalf("private DNS answer triggered an update: %v", f.prov.reqs)
+	}
+	h := f.u.Snapshot().Hosts[0]
+	if h.DNSWarning == "" || h.IPv4 != "203.0.113.1" || !h.InSync {
+		t.Fatalf("host = %+v", h)
+	}
+
+	// A mix of private and public addresses uses the public one; the warning clears.
+	f.res.records["ip4"] = []netip.Addr{ip("10.0.0.5"), ip("198.51.100.9")}
+	f.clk.add(61 * time.Second)
+	f.u.Check(ctx)
+	if len(f.prov.reqs) != 1 {
+		t.Fatalf("public drift not corrected: %v", f.prov.reqs)
+	}
+	if h := f.u.Snapshot().Hosts[0]; h.DNSWarning != "" {
+		t.Fatalf("warning not cleared: %+v", h)
+	}
+}
+
+func TestSplitHorizonAtStartupStillUpdates(t *testing.T) {
+	// With only a private answer at startup the public record is unknown, so
+	// one update is sent (the provider answers nochg if it was correct).
+	f := newFixture(time.Minute, ipdetect.IPv4)
+	f.res.records["ip4"] = []netip.Addr{ip("192.168.1.10")}
+	f.u.Check(context.Background())
+	if len(f.prov.reqs) != 1 || f.u.Snapshot().Hosts[0].DNSWarning == "" {
+		t.Fatalf("reqs = %v, host = %+v", f.prov.reqs, f.u.Snapshot().Hosts[0])
+	}
+}
+
+func TestCounters(t *testing.T) {
+	f := newFixture(time.Minute, ipdetect.IPv4)
+	ctx := context.Background()
+	f.u.Check(ctx) // update ok
+	f.v4.addr = ip("203.0.113.2")
+	f.prov.err = errors.New("boom")
+	f.clk.add(10 * time.Second)
+	f.u.Check(ctx) // change + update failure
+	f.v4.err = errors.New("down")
+	f.clk.add(10 * time.Second)
+	f.u.Check(ctx) // detection failure
+
+	s := f.u.Snapshot()
+	fam, h := s.Families[0], s.Hosts[0]
+	if fam.Detections != 2 || fam.Failures != 1 || fam.Changes != 1 {
+		t.Errorf("family = %+v", fam)
+	}
+	if h.UpdatesOK != 1 || h.UpdatesFail != 1 {
+		t.Errorf("host = %+v", h)
+	}
+}

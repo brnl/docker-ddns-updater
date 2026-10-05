@@ -1,0 +1,61 @@
+{{- with .Values.metrics.prometheusRule }}
+{{- if and .enabled $.Values.metrics.enabled }}
+{{- $selector := printf "job=%q, namespace=%q" (include "ddns-updater.fullname" $) $.Release.Namespace }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "ddns-updater.fullname" $ }}
+  labels:
+    {{- include "ddns-updater.labels" $ | nindent 4 }}
+    {{- with .labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- with .annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  groups:
+    - name: {{ include "ddns-updater.fullname" $ }}
+      rules:
+        {{- with .defaultRules }}
+        {{- if .enabled }}
+        - alert: DDNSUpdaterDown
+          expr: up{ {{- $selector -}} } == 0
+          for: 10m
+          labels:
+            severity: {{ .severity }}
+          annotations:
+            summary: ddns-updater is down
+            description: {{ `Prometheus cannot scrape ddns-updater in {{ $labels.namespace }}; DNS records are not being kept up to date.` | quote }}
+        - alert: DDNSUpdaterHostOutOfSync
+          expr: ddns_updater_host_in_sync{ {{- $selector -}} } == 0
+          for: {{ .outOfSyncFor }}
+          labels:
+            severity: {{ .severity }}
+          annotations:
+            summary: DDNS record out of sync
+            description: {{ `The DNS record for {{ $labels.hostname }} does not match the public IP and updates keep failing; check the status page or logs.` | quote }}
+        - alert: DDNSUpdaterIPDetectionFailing
+          expr: ddns_updater_ip_detection_success{ {{- $selector -}} } == 0
+          for: {{ .detectionFailingFor }}
+          labels:
+            severity: {{ .severity }}
+          annotations:
+            summary: Public IP detection failing
+            description: {{ `ddns-updater cannot determine the public {{ $labels.family }} address (sources failing or disagreeing).` | quote }}
+        - alert: DDNSUpdaterSplitHorizonDNS
+          expr: ddns_updater_host_dns_warning{ {{- $selector -}} } == 1
+          for: 1h
+          labels:
+            severity: info
+          annotations:
+            summary: DNS lookups return non-public addresses
+            description: {{ `DNS lookups for {{ $labels.hostname }} return only internal addresses (split-horizon DNS), so the public record cannot be verified; set dnsServer to a public resolver.` | quote }}
+        {{- end }}
+        {{- end }}
+        {{- with .additionalRules }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+{{- end }}
+{{- end }}

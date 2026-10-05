@@ -1,7 +1,11 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "type": "object",
+  "additionalProperties": false,
   "properties": {
+    "global": {
+      "type": "object"
+    },
     "provider": {
       "type": "string",
       "enum": [
@@ -17,6 +21,7 @@
     },
     "credentials": {
       "type": "object",
+      "additionalProperties": false,
       "properties": {
         "username": {
           "type": "string"
@@ -37,11 +42,105 @@
         }
       }
     },
+    "externalSecret": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "apiVersion": {
+          "type": "string",
+          "pattern": "^external-secrets\\.io/v[0-9a-z]+$"
+        },
+        "refreshInterval": {
+          "$ref": "#/definitions/duration"
+        },
+        "secretStoreRef": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "SecretStore",
+                "ClusterSecretStore"
+              ]
+            },
+            "name": {
+              "type": "string"
+            }
+          }
+        },
+        "username": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "key": {
+              "type": "string"
+            },
+            "property": {
+              "type": "string"
+            },
+            "version": {
+              "type": "string"
+            }
+          }
+        },
+        "password": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "key": {
+              "type": "string"
+            },
+            "property": {
+              "type": "string"
+            },
+            "version": {
+              "type": "string"
+            }
+          }
+        },
+        "annotations": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      }
+    },
     "ipv4": {
-      "$ref": "#/definitions/family"
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "sources": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^https?://"
+          }
+        }
+      }
     },
     "ipv6": {
-      "$ref": "#/definitions/family"
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "sources": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^https?://"
+          }
+        }
+      }
     },
     "interval": {
       "$ref": "#/definitions/duration"
@@ -53,13 +152,15 @@
       "$ref": "#/definitions/duration"
     },
     "dnsServer": {
-      "type": "string"
+      "type": "string",
+      "pattern": "^$|^[^\\s/]+$"
     },
     "dryRun": {
       "type": "boolean"
     },
     "log": {
       "type": "object",
+      "additionalProperties": false,
       "properties": {
         "level": {
           "type": "string",
@@ -81,17 +182,112 @@
     },
     "statusPage": {
       "type": "object",
+      "additionalProperties": false,
       "properties": {
         "enabled": {
           "type": "boolean"
         }
       }
     },
+    "metrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "serviceMonitor": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "interval": {
+              "$ref": "#/definitions/duration"
+            },
+            "scrapeTimeout": {
+              "$ref": "#/definitions/duration"
+            },
+            "labels": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "annotations": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "relabelings": {
+              "type": "array"
+            },
+            "metricRelabelings": {
+              "type": "array"
+            }
+          }
+        },
+        "prometheusRule": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "labels": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "annotations": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "defaultRules": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "outOfSyncFor": {
+                  "$ref": "#/definitions/duration"
+                },
+                "detectionFailingFor": {
+                  "$ref": "#/definitions/duration"
+                },
+                "severity": {
+                  "type": "string"
+                }
+              }
+            },
+            "additionalRules": {
+              "type": "array"
+            }
+          }
+        }
+      }
+    },
     "extraEnv": {
       "type": "array"
     },
+    "extraObjects": {
+      "type": "array",
+      "items": {
+        "type": [
+          "object",
+          "string"
+        ]
+      }
+    },
     "image": {
       "type": "object",
+      "additionalProperties": false,
       "properties": {
         "repository": {
           "type": "string",
@@ -114,6 +310,15 @@
         }
       }
     },
+    "imagePullSecrets": {
+      "type": "array"
+    },
+    "nameOverride": {
+      "type": "string"
+    },
+    "fullnameOverride": {
+      "type": "string"
+    },
     "hostNetwork": {
       "type": "boolean"
     },
@@ -124,6 +329,7 @@
     },
     "service": {
       "type": "object",
+      "additionalProperties": false,
       "properties": {
         "enabled": {
           "type": "boolean"
@@ -140,11 +346,110 @@
           "type": "integer",
           "minimum": 1,
           "maximum": 65535
+        },
+        "annotations": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "ingress": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "className": {
+          "type": "string"
+        },
+        "annotations": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "hosts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "host": {
+                "type": "string"
+              },
+              "paths": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "path": {
+                      "type": "string"
+                    },
+                    "pathType": {
+                      "type": "string",
+                      "enum": [
+                        "Prefix",
+                        "Exact",
+                        "ImplementationSpecific"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "tls": {
+          "type": "array"
+        }
+      }
+    },
+    "httpRoute": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "annotations": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "labels": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "parentRefs": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "hostnames": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "matches": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
         }
       }
     },
     "networkPolicy": {
       "type": "object",
+      "additionalProperties": false,
       "properties": {
         "enabled": {
           "type": "boolean"
@@ -157,93 +462,72 @@
         }
       }
     },
-    "externalSecret": {
+    "serviceAccount": {
       "type": "object",
+      "additionalProperties": false,
       "properties": {
-        "enabled": {
+        "create": {
           "type": "boolean"
         },
-        "apiVersion": {
-          "type": "string",
-          "pattern": "^external-secrets\\.io/v[0-9a-z]+$"
-        },
-        "refreshInterval": {
-          "$ref": "#/definitions/duration"
-        },
-        "secretStoreRef": {
-          "type": "object",
-          "properties": {
-            "kind": {
-              "type": "string",
-              "enum": [
-                "SecretStore",
-                "ClusterSecretStore"
-              ]
-            },
-            "name": {
-              "type": "string"
-            }
-          }
-        },
-        "username": {
-          "type": "object",
-          "properties": {
-            "key": {
-              "type": "string"
-            },
-            "property": {
-              "type": "string"
-            },
-            "version": {
-              "type": "string"
-            }
-          }
-        },
-        "password": {
-          "type": "object",
-          "properties": {
-            "key": {
-              "type": "string"
-            },
-            "property": {
-              "type": "string"
-            },
-            "version": {
-              "type": "string"
-            }
-          }
+        "name": {
+          "type": "string"
         },
         "annotations": {
-          "type": "object"
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
         }
       }
     },
-    "extraObjects": {
-      "type": "array",
-      "items": {
-        "type": [
-          "object",
-          "string"
-        ]
+    "podAnnotations": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
       }
+    },
+    "podLabels": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "podSecurityContext": {
+      "type": "object"
+    },
+    "securityContext": {
+      "type": "object"
+    },
+    "resources": {
+      "type": "object"
+    },
+    "livenessProbe": {
+      "type": "object"
+    },
+    "readinessProbe": {
+      "type": "object"
+    },
+    "priorityClassName": {
+      "type": "string"
+    },
+    "nodeSelector": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "tolerations": {
+      "type": "array"
+    },
+    "affinity": {
+      "type": "object"
+    },
+    "revisionHistoryLimit": {
+      "type": "integer",
+      "minimum": 0
     }
   },
   "definitions": {
-    "family": {
-      "type": "object",
-      "properties": {
-        "enabled": {
-          "type": "boolean"
-        },
-        "sources": {
-          "type": "array",
-          "items": {
-            "type": "string",
-            "pattern": "^https?://"
-          }
-        }
-      }
-    },
     "duration": {
       "type": [
         "string",

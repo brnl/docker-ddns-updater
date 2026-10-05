@@ -1,23 +1,57 @@
 name: Release
 
+# Chart.yaml is the single source of truth for the version. Every push to main
+# publishes an `edge` image; when Chart.yaml carries a version that has no
+# vX.Y.Z tag yet, this workflow also publishes the X.Y.Z image and chart, tags
+# the commit and creates a GitHub release. Don't tag manually: bump the
+# version (and appVersion) in Chart.yaml instead.
+
 on:
   push:
     branches: [main]
-    tags: ["v*.*.*"]
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 env:
   IMAGE: ghcr.io/${{ github.repository }}
+  CHART_REPO: oci://ghcr.io/${{ github.repository_owner }}/charts
 
 jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      release: ${{ steps.version.outputs.release }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - id: version
+        run: |
+          version=$(./hack/chart-version.sh)
+          if git ls-remote --exit-code --tags origin "refs/tags/v${version}" >/dev/null; then
+            release=false
+          else
+            release=true
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "release=${release}" >> "$GITHUB_OUTPUT"
+          echo "Chart version ${version}, release: ${release}" >> "$GITHUB_STEP_SUMMARY"
+
   image:
+    needs: version
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
       id-token: write # keyless cosign signing
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      RELEASE: ${{ needs.version.outputs.release }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
@@ -31,10 +65,12 @@ jobs:
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: ${{ env.IMAGE }}
+          flavor: latest=false
           tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
+            type=semver,pattern={{version}},value=v${{ env.VERSION }},enable=${{ env.RELEASE }}
+            type=semver,pattern={{major}}.{{minor}},value=v${{ env.VERSION }},enable=${{ env.RELEASE }}
+            type=semver,pattern={{major}},value=v${{ env.VERSION }},enable=${{ env.RELEASE }}
+            type=raw,value=latest,enable=${{ env.RELEASE }}
             type=edge,branch=main
             type=sha
       - id: build
@@ -45,7 +81,7 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          build-args: VERSION=${{ steps.meta.outputs.version }}
+          build-args: VERSION=${{ env.RELEASE == 'true' && env.VERSION || format('{0}-edge', env.VERSION) }}
           provenance: mode=max
           sbom: true
           cache-from: type=gha
@@ -56,23 +92,37 @@ jobs:
           DIGEST: ${{ steps.build.outputs.digest }}
         run: cosign sign --yes "${IMAGE}@${DIGEST}"
 
-  chart:
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: image
+  release:
+    if: needs.version.outputs.release == 'true'
+    needs: [version, image]
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write # tag + GitHub release
       packages: write
+      id-token: write # keyless cosign signing
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
         with:
           version: v4.3.0
-      - name: Package and push chart
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      - name: Package, push and sign chart
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          version="${GITHUB_REF_NAME#v}"
-          helm package charts/ddns-updater --version "$version" --app-version "$version" -d dist
+          helm package charts/ddns-updater -d dist
+          test -f "dist/ddns-updater-${VERSION}.tgz"
           echo "$GH_TOKEN" | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
-          helm push "dist/ddns-updater-${version}.tgz" "oci://ghcr.io/${GITHUB_REPOSITORY_OWNER}/charts"
+          echo "$GH_TOKEN" | cosign login ghcr.io -u "${{ github.actor }}" --password-stdin
+          helm push "dist/ddns-updater-${VERSION}.tgz" "$CHART_REPO" 2>&1 | tee push.log
+          digest=$(sed -n 's/^Digest: //p' push.log)
+          test -n "$digest"
+          cosign sign --yes "${CHART_REPO#oci://}/ddns-updater@${digest}"
+      - name: Tag and create GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "v${VERSION}" "dist/ddns-updater-${VERSION}.tgz" \
+            --target "$GITHUB_SHA" --title "v${VERSION}" --generate-notes

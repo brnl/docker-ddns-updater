@@ -46,14 +46,20 @@ ipv6:
   # (https://api6.ipify.org, https://ifconfig.me/ip).
   sources: []
 
-# -- How often to check the public IP address.
-interval: 10s
+# -- How often to check the public IP address. Every check queries each IP
+# source once per enabled family (~1440 requests/day per source at 60s). These
+# are free services; with a record TTL of 60s, 30s-1m is plenty.
+interval: 60s
 # -- Timeout for each HTTP request.
 timeout: 10s
 # -- How often to compare the published DNS records with the detected IP
 # ("0" = only at startup).
 dnsRecheckInterval: 5m
-# -- DNS server for record lookups (e.g. "1.1.1.1"). Empty uses the cluster DNS.
+# -- DNS server for record lookups: an IP address or hostname with an optional
+# port, e.g. "1.1.1.1", "dns.quad9.net" or "[2606:4700:4700::1111]:53".
+# Empty uses the cluster DNS. Set this with split-horizon DNS (the cluster
+# resolves your hostnames to internal addresses): non-public answers are
+# ignored, so the public record can then only be verified via this server.
 dnsServer: ""
 # -- Log what would be updated without calling the provider.
 dryRun: false
@@ -65,6 +71,37 @@ log:
 # -- Serve the status page on "/" (health endpoints are always served).
 statusPage:
   enabled: true
+
+metrics:
+  # -- Serve Prometheus metrics on /metrics.
+  enabled: true
+  serviceMonitor:
+    # -- Create a Prometheus Operator ServiceMonitor (requires service.enabled).
+    enabled: false
+    interval: 1m
+    scrapeTimeout: 10s
+    # -- Extra labels, e.g. `release: kube-prometheus-stack` when your
+    # Prometheus only selects ServiceMonitors carrying that label.
+    labels: {}
+    annotations: {}
+    relabelings: []
+    metricRelabelings: []
+  prometheusRule:
+    # -- Create a Prometheus Operator PrometheusRule with alerts.
+    enabled: false
+    labels: {}
+    annotations: {}
+    defaultRules:
+      # -- Include the built-in alerts (down, out of sync, IP detection
+      # failing, split-horizon DNS).
+      enabled: true
+      # -- How long a hostname may be out of sync before alerting.
+      outOfSyncFor: 30m
+      # -- How long IP detection may fail before alerting.
+      detectionFailingFor: 15m
+      severity: warning
+    # -- Additional rules appended to the rule group.
+    additionalRules: []
 
 # -- Additional environment variables for the container.
 extraEnv: []
@@ -109,11 +146,29 @@ ingress:
           pathType: Prefix
   tls: []
 
+# Gateway API HTTPRoute for the status page (requires service.enabled).
+httpRoute:
+  enabled: false
+  annotations: {}
+  labels: {}
+  # -- Gateways to attach to (required when enabled).
+  parentRefs: []
+  #  - name: my-gateway
+  #    namespace: gateway-system
+  #    sectionName: https
+  hostnames: []
+  #  - ddns.example.local
+  matches:
+    - path:
+        type: PathPrefix
+        value: /
+
 networkPolicy:
   # -- Restrict traffic: egress only to DNS (53) and HTTPS (443); ingress only
   # from the peers below.
   enabled: false
-  # -- Peers allowed to reach the status page, e.g. your ingress controller.
+  # -- Peers allowed to reach the status page and metrics, e.g. your ingress
+  # controller, gateway or Prometheus.
   ingressFrom: []
   #  - namespaceSelector:
   #      matchLabels:
