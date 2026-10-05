@@ -22,7 +22,7 @@ Supported providers:
 - Backs off exponentially on errors, and for an hour on permanent errors such
   as bad credentials or an unknown hostname, so you won't be flagged for abuse.
 - A built-in **status page** plus `/healthz`, `/readyz` and `/status.json`.
-- A small, hardened image (~19 MB): a static Go binary with no third-party
+- A small, hardened image (~19 MB): a static Go 1.27 binary with no third-party
   dependencies on [distroless](https://github.com/GoogleContainerTools/distroless),
   with no shell. It runs as non-root on a read-only root filesystem with no
   capabilities. Released images are multi-arch (amd64, arm64, armv7), signed

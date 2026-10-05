@@ -1,8 +1,7 @@
 # syntax=docker/dockerfile:1
 
-ARG GO_VERSION=1.24
-
-FROM --platform=$BUILDPLATFORM golang:${GO_VERSION}-alpine AS build
+# Base images are pinned by digest; Dependabot keeps tags and digests current.
+FROM --platform=$BUILDPLATFORM golang:1.27-alpine@sha256:8a5910f31396cd4d89662f56c68b3ae31d374308270a1c3bd96672ee5ed43414 AS build
 WORKDIR /src
 COPY go.mod ./
 COPY cmd ./cmd
@@ -18,7 +17,7 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
 
 # Distroless "static": no shell, no package manager, only CA certificates,
 # tzdata and /etc/passwd. Runs as the unprivileged "nonroot" user (65532).
-FROM gcr.io/distroless/static-debian12:nonroot
+FROM gcr.io/distroless/static-debian13:nonroot@sha256:e2e927ec666bae08560abb3c55d0659eceabb657f56b6782ab500a9fc7f555e3
 ARG VERSION=dev
 LABEL org.opencontainers.image.title="ddns-updater" \
       org.opencontainers.image.description="Monitors the public IP address and updates DDNS records (mijn.host) when it changes" \
