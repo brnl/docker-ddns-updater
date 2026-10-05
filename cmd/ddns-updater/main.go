@@ -116,6 +116,7 @@ func run() error {
 				Started:            time.Now(),
 			},
 			StatusPage: cfg.StatusPage,
+			Metrics:    cfg.Metrics,
 			Health:     status,
 			Snapshot:   u.Snapshot,
 		})
@@ -125,7 +126,7 @@ func run() error {
 				stop()
 			}
 		}()
-		log.Info("serving HTTP", "addr", addr, "status_page", cfg.StatusPage)
+		log.Info("serving HTTP", "addr", addr, "status_page", cfg.StatusPage, "metrics", cfg.Metrics)
 	}
 
 	u.Run(ctx)
@@ -143,14 +144,12 @@ func newLogger(cfg *config.Config) *slog.Logger {
 	return slog.New(slog.NewJSONHandler(os.Stdout, opts))
 }
 
-// newResolver returns the system resolver, or one that queries server
-// ("1.1.1.1" or "[2606:4700:4700::1111]:53") directly.
+// newResolver returns the system resolver, or one that sends all queries to
+// server (a host:port normalized by config). A hostname in server is resolved
+// once per connection with the system resolver.
 func newResolver(server string, timeout time.Duration) *net.Resolver {
 	if server == "" {
 		return net.DefaultResolver
-	}
-	if _, _, err := net.SplitHostPort(server); err != nil {
-		server = net.JoinHostPort(strings.Trim(server, "[]"), "53")
 	}
 	dialer := &net.Dialer{Timeout: timeout}
 	return &net.Resolver{

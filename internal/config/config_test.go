@@ -25,10 +25,10 @@ func TestDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.Provider != "mijnhost" || c.Interval != 10*time.Second || !c.IPv4Enabled || c.IPv6Enabled {
+	if c.Provider != "mijnhost" || c.Interval != time.Minute || !c.IPv4Enabled || c.IPv6Enabled {
 		t.Errorf("unexpected defaults: %+v", c)
 	}
-	if len(c.IPv4Sources) != 2 || c.ListenAddr != ":8080" || !c.StatusPage || c.DNSRecheckInterval != 5*time.Minute {
+	if len(c.IPv4Sources) != 2 || c.ListenAddr != ":8080" || !c.StatusPage || !c.Metrics || c.DNSRecheckInterval != 5*time.Minute {
 		t.Errorf("unexpected defaults: %+v", c)
 	}
 }
@@ -89,6 +89,8 @@ func TestInvalid(t *testing.T) {
 		"bad source":     {"DDNS_IPV4_SOURCES": "ftp://example.com"},
 		"bad log level":  {"DDNS_LOG_LEVEL": "loud"},
 		"bad log format": {"DDNS_LOG_FORMAT": "xml"},
+		"bad dns server": {"DDNS_DNS_SERVER": "not a server!"},
+		"bad dns port":   {"DDNS_DNS_SERVER": "1.1.1.1:99999"},
 	}
 	for name, overrides := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -100,5 +102,28 @@ func TestInvalid(t *testing.T) {
 				t.Error("expected error")
 			}
 		})
+	}
+}
+
+func TestNormalizeDNSServer(t *testing.T) {
+	cases := map[string]string{
+		"1.1.1.1":                    "1.1.1.1:53",
+		"1.1.1.1:5353":               "1.1.1.1:5353",
+		"2606:4700:4700::1111":       "[2606:4700:4700::1111]:53",
+		"[2606:4700:4700::1111]":     "[2606:4700:4700::1111]:53",
+		"[2606:4700:4700::1111]:853": "[2606:4700:4700::1111]:853",
+		"dns.example.net":            "dns.example.net:53",
+		"dns.example.net:5353":       "dns.example.net:5353",
+	}
+	for in, want := range cases {
+		got, err := NormalizeDNSServer(in)
+		if err != nil || got != want {
+			t.Errorf("NormalizeDNSServer(%q) = %q, %v; want %q", in, got, err, want)
+		}
+	}
+	for _, bad := range []string{"bad host!", "1.1.1.1:0", "dns.example.net:x", "host:53:53"} {
+		if got, err := NormalizeDNSServer(bad); err == nil {
+			t.Errorf("NormalizeDNSServer(%q) = %q, want error", bad, got)
+		}
 	}
 }

@@ -93,6 +93,8 @@ spec:
               value: {{ printf ":%d" (int .Values.containerPort) | quote }}
             - name: DDNS_STATUS_PAGE
               value: {{ .Values.statusPage.enabled | quote }}
+            - name: DDNS_METRICS
+              value: {{ .Values.metrics.enabled | quote }}
             - name: DDNS_LOG_LEVEL
               value: {{ .Values.log.level | quote }}
             - name: DDNS_LOG_FORMAT

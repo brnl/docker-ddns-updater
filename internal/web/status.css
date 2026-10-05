@@ -47,6 +47,7 @@ tr:last-child td { border-bottom: 0; }
 .mono { font-family: var(--mono); font-size: 13px; overflow-wrap: anywhere; }
 .muted { color: var(--muted); }
 .error-text { color: var(--err); font-size: 13px; margin-top: 4px; overflow-wrap: anywhere; }
+.warn-text { color: var(--warn); font-size: 13px; margin-top: 4px; overflow-wrap: anywhere; }
 dl { display: grid; grid-template-columns: max-content 1fr; gap: 8px 24px; margin: 0; font-size: 14px; }
 dt { color: var(--muted); }
 dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
@@ -67,5 +68,5 @@ footer a { color: var(--accent); text-decoration: none; }
   }
   td > div { flex-basis: 100%; }
   td[data-label="Status"] { flex-wrap: wrap; }
-  td[data-label="Status"] .error-text { margin: 2px 0 0 116px; }
+  td[data-label="Status"] .error-text, td[data-label="Status"] .warn-text { margin: 2px 0 0 116px; }
 }

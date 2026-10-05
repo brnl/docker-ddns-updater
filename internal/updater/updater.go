@@ -4,10 +4,12 @@ package updater
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/netip"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -63,11 +65,19 @@ type hostState struct {
 	lastError   string
 	lastErrorAt time.Time
 	inSync      bool
+	// dnsWarnings holds a warning per family when the resolver returned
+	// only non-public addresses (split-horizon DNS).
+	dnsWarnings map[ipdetect.Family]string
+	updatesOK   uint64
+	updatesFail uint64
 }
 
 type familyState struct {
-	changedAt time.Time
-	err       string
+	changedAt  time.Time
+	err        string
+	detectOK   uint64
+	detectFail uint64
+	changes    uint64
 }
 
 // Snapshot is a point-in-time view of the updater state, for status pages.
@@ -79,10 +89,13 @@ type Snapshot struct {
 
 // FamilyStatus describes the detected public address of one family.
 type FamilyStatus struct {
-	Family    string    `json:"family"`
-	Address   string    `json:"address,omitempty"`
-	ChangedAt time.Time `json:"changed_at,omitzero"`
-	Error     string    `json:"error,omitempty"`
+	Family     string    `json:"family"`
+	Address    string    `json:"address,omitempty"`
+	ChangedAt  time.Time `json:"changed_at,omitzero"`
+	Error      string    `json:"error,omitempty"`
+	Detections uint64    `json:"detections"`
+	Failures   uint64    `json:"detection_failures"`
+	Changes    uint64    `json:"changes"`
 }
 
 // HostStatus describes one managed hostname.
@@ -96,6 +109,9 @@ type HostStatus struct {
 	LastErrorAt time.Time `json:"last_error_at,omitzero"`
 	NextAttempt time.Time `json:"next_attempt,omitzero"`
 	Failures    int       `json:"failures"`
+	DNSWarning  string    `json:"dns_warning,omitempty"`
+	UpdatesOK   uint64    `json:"updates_succeeded"`
+	UpdatesFail uint64    `json:"updates_failed"`
 }
 
 // Updater keeps DNS records in sync with the public IP address.
@@ -123,7 +139,7 @@ func New(opts Options) *Updater {
 	}
 	hosts := make(map[string]*hostState, len(opts.Hostnames))
 	for _, h := range opts.Hostnames {
-		hosts[h] = &hostState{known: map[ipdetect.Family]netip.Addr{}}
+		hosts[h] = &hostState{known: map[ipdetect.Family]netip.Addr{}, dnsWarnings: map[ipdetect.Family]string{}}
 	}
 	families := map[ipdetect.Family]*familyState{}
 	for _, d := range opts.Detectors {
@@ -153,7 +169,15 @@ func (u *Updater) publish() {
 	}
 	sort.Slice(fams, func(i, j int) bool { return fams[i] < fams[j] })
 	for _, f := range fams {
-		fs := FamilyStatus{Family: f.String(), ChangedAt: u.families[f].changedAt, Error: u.families[f].err}
+		st := u.families[f]
+		fs := FamilyStatus{
+			Family:     f.String(),
+			ChangedAt:  st.changedAt,
+			Error:      st.err,
+			Detections: st.detectOK,
+			Failures:   st.detectFail,
+			Changes:    st.changes,
+		}
 		if a := u.current[f]; a.IsValid() {
 			fs.Address = a.String()
 		}
@@ -169,7 +193,16 @@ func (u *Updater) publish() {
 			LastErrorAt: st.lastErrorAt,
 			NextAttempt: st.nextAttempt,
 			Failures:    st.failures,
+			UpdatesOK:   st.updatesOK,
+			UpdatesFail: st.updatesFail,
 		}
+		var warnings []string
+		for _, f := range []ipdetect.Family{ipdetect.IPv4, ipdetect.IPv6} {
+			if w := st.dnsWarnings[f]; w != "" {
+				warnings = append(warnings, w)
+			}
+		}
+		hs.DNSWarning = strings.Join(warnings, "; ")
 		if a := st.known[ipdetect.IPv4]; a.IsValid() {
 			hs.IPv4 = a.String()
 		}
@@ -249,6 +282,7 @@ func (u *Updater) detect(ctx context.Context) map[ipdetect.Family]netip.Addr {
 				u.detectErrs[fam] = msg
 			}
 			u.families[fam].err = r.err.Error()
+			u.families[fam].detectFail++
 			continue
 		}
 		if u.detectErrs[fam] != "" {
@@ -256,9 +290,11 @@ func (u *Updater) detect(ctx context.Context) map[ipdetect.Family]netip.Addr {
 			delete(u.detectErrs, fam)
 		}
 		u.families[fam].err = ""
+		u.families[fam].detectOK++
 		if prev := u.current[fam]; prev != r.addr {
 			if prev.IsValid() {
 				u.log.Info("public IP changed", "family", fam.String(), "old", prev.String(), "new", r.addr.String())
+				u.families[fam].changes++
 			} else {
 				u.log.Info("public IP detected", "family", fam.String(), "ip", r.addr.String())
 			}
@@ -324,6 +360,7 @@ func (u *Updater) syncHost(ctx context.Context, hostname string, detected map[ip
 		st.nextAttempt = now.Add(backoff)
 		st.lastError = err.Error()
 		st.lastErrorAt = now
+		st.updatesFail++
 		u.log.Error("DNS update failed", append(attrs, "error", err.Error(), "retry_in", backoff.String())...)
 		return false
 	} else {
@@ -332,6 +369,9 @@ func (u *Updater) syncHost(ctx context.Context, hostname string, detected map[ip
 
 	for fam, addr := range detected {
 		st.known[fam] = addr
+	}
+	if !u.opts.DryRun {
+		st.updatesOK++
 	}
 	st.lastSync = now
 	st.lastUpdate = now
@@ -343,6 +383,12 @@ func (u *Updater) syncHost(ctx context.Context, hostname string, detected map[ip
 }
 
 // lookupDNS refreshes st.known from the published records.
+//
+// Only public addresses count as published records. A resolver that only
+// returns private or otherwise non-routable addresses is almost certainly
+// split-horizon DNS (an internal view of the zone); its answer says nothing
+// about the public record, so the last known value is kept and a warning is
+// raised instead.
 func (u *Updater) lookupDNS(ctx context.Context, hostname string, st *hostState, detected map[ipdetect.Family]netip.Addr) {
 	for fam, cur := range detected {
 		network := "ip4"
@@ -354,15 +400,23 @@ func (u *Updater) lookupDNS(ctx context.Context, hostname string, st *hostState,
 			var dnsErr *net.DNSError
 			if errors.As(err, &dnsErr) && dnsErr.IsNotFound {
 				st.known[fam] = netip.Addr{}
+				u.setDNSWarning(hostname, st, fam, "")
 				u.log.Debug("no DNS record found", "hostname", hostname, "family", fam.String())
 			} else {
 				u.log.Debug("DNS lookup failed", "hostname", hostname, "family", fam.String(), "error", err.Error())
 			}
 			continue
 		}
-		var published netip.Addr
+		var (
+			published netip.Addr
+			private   []string
+		)
 		for _, a := range addrs {
 			a = a.Unmap()
+			if !ipdetect.IsPublic(a) {
+				private = append(private, a.String())
+				continue
+			}
 			if a == cur {
 				published = a
 				break
@@ -371,10 +425,30 @@ func (u *Updater) lookupDNS(ctx context.Context, hostname string, st *hostState,
 				published = a
 			}
 		}
+		if !published.IsValid() && len(private) > 0 {
+			u.setDNSWarning(hostname, st, fam, fmt.Sprintf(
+				"DNS returned only non-public %s address(es) %s; ignoring (split-horizon DNS? set DDNS_DNS_SERVER to a public resolver)",
+				fam, strings.Join(private, ", ")))
+			continue
+		}
+		u.setDNSWarning(hostname, st, fam, "")
 		if published != st.known[fam] {
 			u.log.Debug("DNS record differs from last known value", "hostname", hostname, "family", fam.String(), "dns", published.String())
 		}
 		st.known[fam] = published
+	}
+}
+
+// setDNSWarning records (or clears) a DNS warning, logging only on change.
+func (u *Updater) setDNSWarning(hostname string, st *hostState, fam ipdetect.Family, msg string) {
+	if st.dnsWarnings[fam] == msg {
+		return
+	}
+	if msg != "" {
+		u.log.Warn("ignoring DNS answer", "hostname", hostname, "family", fam.String(), "reason", msg)
+		st.dnsWarnings[fam] = msg
+	} else {
+		delete(st.dnsWarnings, fam)
 	}
 }
 

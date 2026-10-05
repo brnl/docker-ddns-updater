@@ -43,6 +43,7 @@
             <td data-label="Status">
               <span class="pill {{.State.Class}}">{{.State.Label}}</span>
               {{if .LastError}}<div class="error-text">{{.LastError}}{{if not .NextAttempt.IsZero}} · retry {{until .NextAttempt}}{{end}}</div>{{end}}
+              {{if .DNSWarning}}<div class="warn-text">{{.DNSWarning}}</div>{{end}}
             </td>
             <td class="muted" data-label="Last update">{{if .LastUpdate.IsZero}}—{{else}}<span title="{{stamp .LastUpdate}}">{{ago .LastUpdate}}</span>{{end}}</td>
           </tr>

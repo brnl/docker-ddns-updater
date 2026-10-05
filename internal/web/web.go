@@ -63,9 +63,11 @@ type Options struct {
 	// StatusPage enables "/" and "/status.json"; health endpoints are always
 	// served.
 	StatusPage bool
-	Health     *health.Status
-	Snapshot   func() updater.Snapshot
-	Now        func() time.Time
+	// Metrics enables "/metrics" (Prometheus text format).
+	Metrics  bool
+	Health   *health.Status
+	Snapshot func() updater.Snapshot
+	Now      func() time.Time
 }
 
 // Handler returns the HTTP handler for the status page and health endpoints.
@@ -80,6 +82,9 @@ func Handler(opts Options) http.Handler {
 	if opts.StatusPage {
 		mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, _ *http.Request) { servePage(w, opts) })
 		mux.HandleFunc("GET /status.json", func(w http.ResponseWriter, _ *http.Request) { serveJSON(w, opts) })
+	}
+	if opts.Metrics {
+		mux.HandleFunc("GET /metrics", func(w http.ResponseWriter, _ *http.Request) { serveMetrics(w, opts) })
 	}
 	return securityHeaders(mux)
 }
@@ -215,6 +220,14 @@ func humanDuration(d time.Duration) string {
 	default:
 		return joinUnits(int(d.Hours())/24, "d", int(d.Hours())%24, "h")
 	}
+}
+
+// unix returns t as fractional seconds since the epoch, or 0 for the zero time.
+func unix(t time.Time) float64 {
+	if t.IsZero() {
+		return 0
+	}
+	return float64(t.UnixMilli()) / 1000
 }
 
 func joinUnits(a int, au string, b int, bu string) string {
