@@ -65,7 +65,7 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@v5
-      - uses: azure/setup-helm@v4
+      - uses: azure/setup-helm@v5
       - name: Package and push chart
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
