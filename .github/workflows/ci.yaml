@@ -45,6 +45,16 @@ jobs:
             --set ipv6.enabled=true \
             --set networkPolicy.enabled=true \
             --set ingress.enabled=true > /dev/null
+      - name: helm template (externalSecret + extraObjects)
+        run: |
+          helm template test charts/ddns-updater \
+            --set hostnames[0]=home.example.com \
+            --set externalSecret.enabled=true \
+            --set externalSecret.secretStoreRef.name=store \
+            --set externalSecret.username.key=ddns --set externalSecret.username.property=username \
+            --set externalSecret.password.key=ddns --set externalSecret.password.property=password \
+            --set-json 'extraObjects=[{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"{{ .Release.Name }}-extra"}}]' \
+            | grep -q "kind: ExternalSecret"
 
   docker:
     runs-on: ubuntu-latest

@@ -85,6 +85,47 @@ helm install ddns-updater oci://ghcr.io/brnl/charts/ddns-updater \
 
 From a checkout, use `charts/ddns-updater` instead of the OCI reference.
 
+### External Secrets Operator
+
+Instead of creating the Secret yourself, the chart can render an
+[`ExternalSecret`](https://external-secrets.io) that syncs the credentials from
+your secret backend (Vault, 1Password, AWS/GCP/Azure secret managers, ...):
+
+```yaml
+externalSecret:
+  enabled: true
+  secretStoreRef:
+    kind: ClusterSecretStore
+    name: my-store
+  username:
+    key: ddns/mijnhost
+    property: username
+  password:
+    key: ddns/mijnhost
+    property: password
+```
+
+The credentials are read at startup. When the ExternalSecret spec changes the
+pod restarts automatically. To also pick up rotated values from the backend,
+use a tool such as [Reloader](https://github.com/stakater/Reloader) through
+`podAnnotations`.
+
+### Extra manifests
+
+`extraObjects` deploys arbitrary additional manifests with the release, for
+example a `SecretStore`, a `PodDisruptionBudget` or a `ServiceMonitor`. Items
+may be objects or YAML strings, and are rendered with `tpl`:
+
+```yaml
+extraObjects:
+  - apiVersion: v1
+    kind: ConfigMap
+    metadata:
+      name: '{{ include "ddns-updater.fullname" . }}-extra'
+    data:
+      release: "{{ .Release.Name }}"
+```
+
 Notable values (see [`values.yaml`](charts/ddns-updater/values.yaml) for all):
 
 | Value | Default | Description |
@@ -92,6 +133,8 @@ Notable values (see [`values.yaml`](charts/ddns-updater/values.yaml) for all):
 | `hostnames` | `[]` | Hostnames to update (required) |
 | `credentials.existingSecret` | `""` | Existing Secret with `username`/`password` keys (recommended) |
 | `credentials.username` / `.password` | `""` | Or let the chart create the Secret |
+| `externalSecret.enabled` | `false` | Let External Secrets Operator create the Secret (see below) |
+| `extraObjects` | `[]` | Extra manifests to deploy with the release (see below) |
 | `ipv4.enabled` / `ipv6.enabled` | `true` / `false` | Address families to manage |
 | `interval` | `10s` | How often to check the public IP |
 | `dnsRecheckInterval` | `5m` | How often to compare with the published DNS record |
