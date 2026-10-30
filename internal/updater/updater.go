@@ -435,8 +435,8 @@ func (u *Updater) syncHost(ctx context.Context, hostname string, detected map[ip
 	// A family whose detection failed this cycle keeps its last known value.
 	req := provider.Request{
 		Hostname: hostname,
-		IPv4:     u.addrForRequest(st, detected, ipdetect.IPv4),
-		IPv6:     u.addrForRequest(st, detected, ipdetect.IPv6),
+		IPv4:     u.addrForRequest(detected, ipdetect.IPv4),
+		IPv6:     u.addrForRequest(detected, ipdetect.IPv6),
 	}
 	attrs := append([]any{"hostname", hostname, "provider", u.opts.Provider.Name()}, changed...)
 	if req.IPv4.IsValid() {
@@ -521,19 +521,15 @@ func (u *Updater) syncHost(ctx context.Context, hostname string, detected map[ip
 }
 
 // addrForRequest returns the address to send for fam: the detected one, or,
-// if detection failed this cycle, the last known record (or last detected
-// address) so the provider keeps that record as it is.
-func (u *Updater) addrForRequest(st *hostState, detected map[ipdetect.Family]netip.Addr, fam ipdetect.Family) netip.Addr {
+// if detection failed this cycle, the last address the IP sources agreed on,
+// so the provider keeps that record as it is. DNS answers are deliberately
+// never used here: they are unauthenticated and must not be able to end up
+// in the published record.
+func (u *Updater) addrForRequest(detected map[ipdetect.Family]netip.Addr, fam ipdetect.Family) netip.Addr {
 	if a, ok := detected[fam]; ok {
 		return a
 	}
-	if _, enabled := u.families[fam]; !enabled {
-		return netip.Addr{}
-	}
-	if a := st.known[fam]; a.IsValid() {
-		return a
-	}
-	return u.current[fam]
+	return u.current[fam] // zero if never detected or the family is disabled
 }
 
 // lookupDNS refreshes st.known from the published records.
