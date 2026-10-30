@@ -89,6 +89,10 @@ spec:
             {{- end }}
             - name: DDNS_DRY_RUN
               value: {{ .Values.dryRun | quote }}
+            {{- with .Values.contactEmail }}
+            - name: DDNS_CONTACT_EMAIL
+              value: {{ . | quote }}
+            {{- end }}
             - name: DDNS_HEARTBEAT_INTERVAL
               value: {{ .Values.heartbeatInterval | quote }}
             - name: DDNS_LISTEN_ADDR

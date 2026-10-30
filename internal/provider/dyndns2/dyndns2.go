@@ -29,17 +29,20 @@ type Config struct {
 	Name string
 	// DisplayName is used in error messages, e.g. "mijn.host".
 	DisplayName string
-	Endpoint    string
-	Username    string
-	Password    string
-	UserAgent   string
-	Timeout     time.Duration
+	// Endpoint is the update URL; empty uses DefaultEndpoint.
+	Endpoint        string
+	DefaultEndpoint string
+	Username        string
+	Password        string
+	UserAgent       string
+	Timeout         time.Duration
 	// SetIPs adds the address parameters for req to q.
 	SetIPs func(q url.Values, req provider.Request)
-	// StopOnRejection makes rejections (bad credentials, unknown hostname,
-	// blocked client, ...) stop all further updates until the configuration
-	// is fixed, as some providers require. Otherwise they are retried after
-	// a long backoff.
+	// StopOnRejection makes explicit rejection codes (bad credentials,
+	// unknown hostname, blocked client, ...) stop further updates until the
+	// configuration is fixed, as some providers require. Otherwise they are
+	// retried after a long backoff. Bare HTTP errors without a dyndns2 code
+	// (which may come from a proxy or WAF) never stop updates.
 	StopOnRejection bool
 	// ServerErrorRetryAfter is the minimum wait after a server error (911,
 	// dnserr, HTTP 5xx); zero uses the normal backoff.
@@ -78,6 +81,9 @@ type Client struct {
 func New(cfg Config) *Client {
 	if cfg.SetIPs == nil {
 		cfg.SetIPs = SeparateIPv6
+	}
+	if cfg.Endpoint == "" {
+		cfg.Endpoint = cfg.DefaultEndpoint
 	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
@@ -136,18 +142,25 @@ func (c *Client) Update(ctx context.Context, req provider.Request) (string, erro
 	return truncate(text, 100), nil
 }
 
+type rejection struct {
+	why string
+	// account: the error concerns the credentials or the client, not the
+	// hostname, so it applies to every hostname.
+	account bool
+}
+
 // rejections maps dyndns2 error codes that need user intervention to a
 // human-readable explanation.
-var rejections = map[string]string{
-	"badauth":  "invalid username or password",
-	"nohost":   "hostname does not exist in this account",
-	"notfqdn":  "hostname is not a fully qualified domain name",
-	"numhost":  "too many hostnames in one request",
-	"!yours":   "hostname is not owned by this account",
-	"!donator": "feature not available for this account",
-	"badagent": "client blocked (User-Agent rejected)",
-	"abuse":    "account or client blocked for abuse",
-	"badsys":   "invalid system parameter",
+var rejections = map[string]rejection{
+	"badauth":  {"invalid username or password", true},
+	"badagent": {"client blocked (User-Agent rejected)", true},
+	"abuse":    {"account or client blocked for abuse", true},
+	"nohost":   {"hostname does not exist in this account", false},
+	"notfqdn":  {"hostname is not a fully qualified domain name", false},
+	"numhost":  {"too many hostnames in one request", false},
+	"!yours":   {"hostname is not owned by this account", false},
+	"!donator": {"feature not available for this account", false},
+	"badsys":   {"invalid system parameter", false},
 }
 
 // interpret maps a dyndns2 response to an error.
@@ -162,24 +175,26 @@ func (c *Client) interpret(status int, text string) error {
 			return nil
 		}
 	}
-	if why, ok := rejections[code]; ok {
-		return c.rejected(fmt.Errorf("%s rejected the update: %s (%s)", name, code, why))
+	if r, ok := rejections[code]; ok {
+		return &provider.PermanentError{
+			Err:     fmt.Errorf("%s rejected the update: %s (%s)", name, code, r.why),
+			Stop:    c.cfg.StopOnRejection,
+			Account: r.account,
+		}
 	}
 	switch {
 	case code == "dnserr" || code == "911":
 		return c.serverError(fmt.Errorf("%s server error: %s", name, code))
+	// Without a dyndns2 code the response may come from a proxy or WAF
+	// rather than the provider: back off for long, but never stop.
 	case status == http.StatusUnauthorized || status == http.StatusForbidden:
-		return c.rejected(fmt.Errorf("%s rejected the credentials (HTTP %d)", name, status))
+		return &provider.PermanentError{Err: fmt.Errorf("%s rejected the request (HTTP %d): %q", name, status, truncate(text, 100))}
 	case status == http.StatusNotFound:
-		return c.rejected(fmt.Errorf("%s: hostname not found (HTTP %d)", name, status))
+		return &provider.PermanentError{Err: fmt.Errorf("%s: update URL not found (HTTP %d)", name, status)}
 	case status >= 500:
 		return c.serverError(fmt.Errorf("%s server error (HTTP %d): %q", name, status, truncate(text, 200)))
 	}
 	return fmt.Errorf("unexpected response from %s (HTTP %d): %q", name, status, truncate(text, 200))
-}
-
-func (c *Client) rejected(err error) error {
-	return &provider.PermanentError{Err: err, Stop: c.cfg.StopOnRejection}
 }
 
 func (c *Client) serverError(err error) error {

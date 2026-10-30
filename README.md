@@ -190,6 +190,7 @@ The built-in alerts are:
 | ----- | ---------- |
 | `DDNSUpdaterDown` | the pod cannot be scraped for 10 minutes |
 | `DDNSUpdaterHostOutOfSync` | a record has not matched the public IP for `outOfSyncFor` (30m), e.g. because updates keep failing |
+| `DDNSUpdaterUpdatesStopped` | the provider rejected updates and requires a configuration fix and restart (1m) |
 | `DDNSUpdaterIPDetectionFailing` | the public IP could not be determined for `detectionFailingFor` (15m) |
 | `DDNSUpdaterSplitHorizonDNS` | DNS lookups return only internal addresses for an hour (info) |
 
@@ -232,6 +233,7 @@ All settings are environment variables.
 | `DDNS_DNS_SERVER` | system resolver | DNS server for record lookups: an IP address or hostname with an optional port, e.g. `1.1.1.1`, `dns.quad9.net` or `[2606:4700:4700::1111]:53` |
 | `DDNS_DRY_RUN` | `false` | Log what would be updated without calling the provider |
 | `DDNS_ENDPOINT` | provider default | Override the provider's update URL (testing) |
+| `DDNS_CONTACT_EMAIL` | — | Optional maintainer contact sent in the User-Agent (recommended by No-IP) |
 | `DDNS_HEARTBEAT_INTERVAL` | `1h` | How often to log a one-line status summary (`0` disables it) |
 | `DDNS_LISTEN_ADDR` | `:8080` | Address for the status page and health endpoints (`off` disables it) |
 | `DDNS_STATUS_PAGE` | `true` | Serve the status page on `/` and `/status.json` |
@@ -282,13 +284,22 @@ https://dynupdate.no-ip.com/nic/update?hostname=<hostname>&myip=<ipv4>,<ipv6>
   DDNS Key (recommended: a key only grants dynamic updates).
 - For dual-stack hostnames both addresses go in `myip`, comma-separated, as
   No-IP prefers; with only one family enabled only that address is sent.
-- As No-IP requires, an error response (`nohost`, `badauth`, `badagent`,
-  `!donator`, `abuse`) **stops all updates for that hostname** until you fix
-  the configuration and restart the updater. Clients that keep retrying risk
-  being blocked. The status page shows "Updates stopped", and
-  `ddns_updater_host_updates_stopped` is set.
+- As No-IP requires, an error response **stops updates** until you fix the
+  configuration and restart the updater; clients that keep retrying risk
+  being blocked. `nohost` and `!donator` stop that hostname; `badauth`,
+  `badagent` and `abuse` concern the account or client and stop **all**
+  hostnames. The status page shows "Updates stopped", the metric
+  `ddns_updater_host_updates_stopped` is set and the `DDNSUpdaterUpdatesStopped`
+  alert fires. The stop is kept in memory only (the root filesystem is
+  read-only), so an unrelated restart sends one new attempt.
+- A bare HTTP 401/403/404 without a dyndns2 code (e.g. from a proxy or WAF)
+  does not stop updates; it is retried after an hour.
 - After a server error (`911` or HTTP 5xx) the next attempt waits at least
   30 minutes.
+- No-IP asks clients to send a User-Agent like
+  `Company Program/OS-Version maintainer-contact`. The updater sends
+  `brnl docker-ddns-updater/linux-<version> <contact>`, where the contact is
+  `DDNS_CONTACT_EMAIL` (chart: `contactEmail`) or, if unset, the project URL.
 - No-IP groups are not supported: every entry in `DDNS_HOSTNAMES` must be a
   hostname. Free No-IP hostnames must still be confirmed periodically on the
   No-IP website; the updater cannot do that for you.

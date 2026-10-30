@@ -36,6 +36,14 @@ spec:
           annotations:
             summary: DDNS record out of sync
             description: {{ `The DNS record for {{ $labels.hostname }} does not match the public IP and updates keep failing; check the status page or logs.` | quote }}
+        - alert: DDNSUpdaterUpdatesStopped
+          expr: ddns_updater_host_updates_stopped{ {{- $selector -}} } == 1
+          for: 1m
+          labels:
+            severity: {{ .severity }}
+          annotations:
+            summary: DDNS updates stopped by provider rejection
+            description: {{ `The provider rejected updates for {{ $labels.hostname }} (e.g. bad credentials or unknown hostname) and requires the client to stop; fix the configuration and restart ddns-updater.` | quote }}
         - alert: DDNSUpdaterIPDetectionFailing
           expr: ddns_updater_ip_detection_success{ {{- $selector -}} } == 0
           for: {{ .detectionFailingFor }}

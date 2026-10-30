@@ -27,10 +27,12 @@ type Provider interface {
 // such as invalid credentials or an unknown hostname. Callers should back off
 // for a long time to avoid being flagged for abuse. If Stop is set, the
 // provider requires that no further updates are sent until the user fixes the
-// configuration (the updater stops updating the hostname until restart).
+// configuration (the updater stops until restart): for this hostname only,
+// or for all hostnames when Account is set (bad credentials, blocked client).
 type PermanentError struct {
-	Err  error
-	Stop bool
+	Err     error
+	Stop    bool
+	Account bool
 }
 
 func (e *PermanentError) Error() string { return e.Err.Error() }
@@ -47,6 +49,13 @@ func IsPermanent(err error) bool {
 func StopsUpdates(err error) bool {
 	var p *PermanentError
 	return errors.As(err, &p) && p.Stop
+}
+
+// StopsAllUpdates reports whether err requires stopping updates for every
+// hostname of the account.
+func StopsAllUpdates(err error) bool {
+	var p *PermanentError
+	return errors.As(err, &p) && p.Stop && p.Account
 }
 
 // RetryAfterError is a temporary failure after which the provider requires

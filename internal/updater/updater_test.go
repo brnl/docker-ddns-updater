@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net"
 	"net/netip"
@@ -516,3 +517,51 @@ func TestRetryAfter(t *testing.T) {
 		t.Fatalf("not retried after 30m: %d requests", len(f.prov.reqs))
 	}
 }
+
+func TestAccountWideStop(t *testing.T) {
+	f := newFixture(time.Minute, ipdetect.IPv4)
+	f.u = New(Options{
+		Provider:  f.prov,
+		Detectors: []Detector{f.v4},
+		Hostnames: []string{"a.example.com", "b.example.com", "c.example.com"},
+		Interval:  10 * time.Second, DNSRecheckInterval: time.Minute,
+		Resolver: f.res, Logger: quiet(), Now: f.clk.now,
+	})
+	f.prov.err = &provider.PermanentError{Err: errors.New("badauth"), Stop: true, Account: true}
+	f.u.Check(context.Background())
+	if len(f.prov.reqs) != 1 {
+		t.Fatalf("requests after account-wide rejection = %d, want 1", len(f.prov.reqs))
+	}
+	f.v4.addr = ip("203.0.113.9")
+	f.clk.add(24 * time.Hour)
+	f.u.Check(context.Background())
+	if len(f.prov.reqs) != 1 {
+		t.Fatalf("updates sent after account-wide stop: %d", len(f.prov.reqs))
+	}
+	for _, h := range f.u.Snapshot().Hosts {
+		if !h.Stopped || h.LastError == "" {
+			t.Errorf("host %s not stopped: %+v", h.Hostname, h)
+		}
+	}
+}
+
+func TestKeepsLastKnownAddressWhenDetectionFails(t *testing.T) {
+	f := newFixture(time.Minute, ipdetect.IPv4, ipdetect.IPv6)
+	ctx := context.Background()
+	f.u.Check(ctx) // both families detected and sent
+	// IPv4 changes while IPv6 detection fails: the update must still carry
+	// the known IPv6 address so the AAAA record is not dropped.
+	f.v4.addr = ip("203.0.113.2")
+	f.v6.err = errors.New("no route")
+	f.clk.add(10 * time.Second)
+	f.u.Check(ctx)
+	if len(f.prov.reqs) != 2 {
+		t.Fatalf("requests = %d", len(f.prov.reqs))
+	}
+	r := f.prov.reqs[1]
+	if r.IPv4 != ip("203.0.113.2") || r.IPv6 != ip("2001:db8::1") {
+		t.Fatalf("request = %+v", r)
+	}
+}
+
+func quiet() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }

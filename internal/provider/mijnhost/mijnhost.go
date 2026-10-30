@@ -14,17 +14,15 @@ const DefaultEndpoint = "https://mijn.host/nic/update"
 
 // New returns a mijn.host provider. An empty endpoint uses DefaultEndpoint.
 func New(endpoint, username, password, userAgent string, timeout time.Duration) *dyndns2.Client {
-	if endpoint == "" {
-		endpoint = DefaultEndpoint
-	}
 	return dyndns2.New(dyndns2.Config{
-		Name:        "mijnhost",
-		DisplayName: "mijn.host",
-		Endpoint:    endpoint,
-		Username:    username,
-		Password:    password,
-		UserAgent:   userAgent,
-		Timeout:     timeout,
-		SetIPs:      dyndns2.SeparateIPv6,
+		Name:            "mijnhost",
+		DisplayName:     "mijn.host",
+		Endpoint:        endpoint,
+		DefaultEndpoint: DefaultEndpoint,
+		Username:        username,
+		Password:        password,
+		UserAgent:       userAgent,
+		Timeout:         timeout,
+		SetIPs:          dyndns2.SeparateIPv6, // myip=<ipv4>&myipv6=<ipv6>
 	})
 }

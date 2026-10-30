@@ -430,9 +430,14 @@ func (u *Updater) syncHost(ctx context.Context, hostname string, detected map[ip
 	}
 	st.inSync = false
 
-	// Always send every detected family, so a partial update never makes the
-	// provider fall back to the request's source address.
-	req := provider.Request{Hostname: hostname, IPv4: detected[ipdetect.IPv4], IPv6: detected[ipdetect.IPv6]}
+	// Always send every enabled family, so a partial update never makes the
+	// provider fall back to the request's source address or drop a record.
+	// A family whose detection failed this cycle keeps its last known value.
+	req := provider.Request{
+		Hostname: hostname,
+		IPv4:     u.addrForRequest(st, detected, ipdetect.IPv4),
+		IPv6:     u.addrForRequest(st, detected, ipdetect.IPv6),
+	}
 	attrs := append([]any{"hostname", hostname, "provider", u.opts.Provider.Name()}, changed...)
 	if req.IPv4.IsValid() {
 		attrs = append(attrs, "ipv4", req.IPv4.String())
@@ -455,6 +460,19 @@ func (u *Updater) syncHost(ctx context.Context, hostname string, detected map[ip
 		attrs = append(attrs, "error", err.Error(), "attempt", st.failures,
 			"failing_for", now.Sub(st.updateErr.Since()).Round(time.Second).String())
 
+		if provider.StopsAllUpdates(err) {
+			// Bad credentials or a blocked client: the provider requires the
+			// client to stop entirely until the user fixes the problem.
+			for _, other := range u.hosts {
+				other.stopped = true
+				other.nextAttempt = time.Time{}
+				if other.lastError == "" {
+					other.lastError, other.lastErrorAt = err.Error(), now
+				}
+			}
+			u.log.Error("DNS update rejected by provider; updates for ALL hostnames are stopped until the configuration is fixed and the updater is restarted", attrs...)
+			return false
+		}
 		if provider.StopsUpdates(err) {
 			// The provider requires that the client stops until the user
 			// fixes the problem; retrying risks getting the account blocked.
@@ -500,6 +518,22 @@ func (u *Updater) syncHost(ctx context.Context, hostname string, detected map[ip
 	st.nextAttempt = time.Time{}
 	st.inSync = true
 	return true
+}
+
+// addrForRequest returns the address to send for fam: the detected one, or,
+// if detection failed this cycle, the last known record (or last detected
+// address) so the provider keeps that record as it is.
+func (u *Updater) addrForRequest(st *hostState, detected map[ipdetect.Family]netip.Addr, fam ipdetect.Family) netip.Addr {
+	if a, ok := detected[fam]; ok {
+		return a
+	}
+	if _, enabled := u.families[fam]; !enabled {
+		return netip.Addr{}
+	}
+	if a := st.known[fam]; a.IsValid() {
+		return a
+	}
+	return u.current[fam]
 }
 
 // lookupDNS refreshes st.known from the published records.
