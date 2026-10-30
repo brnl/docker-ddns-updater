@@ -73,6 +73,9 @@ type hostState struct {
 	dnsWarnings map[ipdetect.Family]string
 	updatesOK   uint64
 	updatesFail uint64
+	// stopped is set when the provider requires that no further updates
+	// are sent until the configuration is fixed (and the updater restarted).
+	stopped bool
 	// failure tracking for logging (start, reminders, recovery)
 	updateErr condlog.Tracker
 	lookupErr map[ipdetect.Family]*condlog.Tracker
@@ -116,6 +119,7 @@ type HostStatus struct {
 	NextAttempt time.Time `json:"next_attempt,omitzero"`
 	Failures    int       `json:"failures"`
 	DNSWarning  string    `json:"dns_warning,omitempty"`
+	Stopped     bool      `json:"updates_stopped,omitempty"`
 	UpdatesOK   uint64    `json:"updates_succeeded"`
 	UpdatesFail uint64    `json:"updates_failed"`
 }
@@ -220,6 +224,7 @@ func (u *Updater) publish() {
 			Failures:    st.failures,
 			UpdatesOK:   st.updatesOK,
 			UpdatesFail: st.updatesFail,
+			Stopped:     st.stopped,
 		}
 		var warnings []string
 		for _, f := range []ipdetect.Family{ipdetect.IPv4, ipdetect.IPv6} {
@@ -300,12 +305,14 @@ func (u *Updater) heartbeat(ok bool) {
 		}
 	}
 	var inSync int
-	var outOfSync, failing []string
+	var outOfSync, failing, stopped []string
 	var updatesOK, updatesFail uint64
 	for _, h := range snap.Hosts {
 		updatesOK += h.UpdatesOK
 		updatesFail += h.UpdatesFail
 		switch {
+		case h.Stopped:
+			stopped = append(stopped, h.Hostname)
 		case h.Failures > 0:
 			failing = append(failing, h.Hostname)
 		case h.InSync:
@@ -321,6 +328,9 @@ func (u *Updater) heartbeat(ok bool) {
 	}
 	if len(failing) > 0 {
 		attrs = append(attrs, "failing", strings.Join(failing, ","))
+	}
+	if len(stopped) > 0 {
+		attrs = append(attrs, "updates_stopped", strings.Join(stopped, ","))
 	}
 	if len(detectFailing) > 0 {
 		attrs = append(attrs, "detection_failing", strings.Join(detectFailing, ","))
@@ -393,7 +403,7 @@ func (u *Updater) detect(ctx context.Context) map[ipdetect.Family]netip.Addr {
 func (u *Updater) syncHost(ctx context.Context, hostname string, detected map[ipdetect.Family]netip.Addr) bool {
 	st := u.hosts[hostname]
 	now := u.opts.Now()
-	if now.Before(st.nextAttempt) {
+	if st.stopped || now.Before(st.nextAttempt) {
 		return false
 	}
 	if first := st.lastSync.IsZero(); first || (u.opts.DNSRecheckInterval > 0 && now.Sub(st.lastSync) >= u.opts.DNSRecheckInterval) {
@@ -420,9 +430,14 @@ func (u *Updater) syncHost(ctx context.Context, hostname string, detected map[ip
 	}
 	st.inSync = false
 
-	// Always send every detected family, so a partial update never makes the
-	// provider fall back to the request's source address.
-	req := provider.Request{Hostname: hostname, IPv4: detected[ipdetect.IPv4], IPv6: detected[ipdetect.IPv6]}
+	// Always send every enabled family, so a partial update never makes the
+	// provider fall back to the request's source address or drop a record.
+	// A family whose detection failed this cycle keeps its last known value.
+	req := provider.Request{
+		Hostname: hostname,
+		IPv4:     u.addrForRequest(detected, ipdetect.IPv4),
+		IPv6:     u.addrForRequest(detected, ipdetect.IPv6),
+	}
 	attrs := append([]any{"hostname", hostname, "provider", u.opts.Provider.Name()}, changed...)
 	if req.IPv4.IsValid() {
 		attrs = append(attrs, "ipv4", req.IPv4.String())
@@ -438,23 +453,48 @@ func (u *Updater) syncHost(ctx context.Context, hostname string, detected map[ip
 			return false
 		}
 		st.failures++
+		st.lastError = err.Error()
+		st.lastErrorAt = now
+		st.updatesFail++
+		st.updateErr.Fail(now, err.Error())
+		attrs = append(attrs, "error", err.Error(), "attempt", st.failures,
+			"failing_for", now.Sub(st.updateErr.Since()).Round(time.Second).String())
+
+		if provider.StopsAllUpdates(err) {
+			// Bad credentials or a blocked client: the provider requires the
+			// client to stop entirely until the user fixes the problem.
+			for _, other := range u.hosts {
+				other.stopped = true
+				other.nextAttempt = time.Time{}
+				if other.lastError == "" {
+					other.lastError, other.lastErrorAt = err.Error(), now
+				}
+			}
+			u.log.Error("DNS update rejected by provider; updates for ALL hostnames are stopped until the configuration is fixed and the updater is restarted", attrs...)
+			return false
+		}
+		if provider.StopsUpdates(err) {
+			// The provider requires that the client stops until the user
+			// fixes the problem; retrying risks getting the account blocked.
+			st.stopped = true
+			st.nextAttempt = time.Time{}
+			u.log.Error("DNS update rejected by provider; updates for this hostname are stopped until the configuration is fixed and the updater is restarted", attrs...)
+			return false
+		}
 		backoff := u.backoff(st.failures)
 		permanent := provider.IsPermanent(err)
 		if permanent {
 			backoff = permanentBackoff
 		}
+		if after, ok := provider.RetryAfter(err); ok && after > backoff {
+			backoff = after
+		}
 		st.nextAttempt = now.Add(backoff)
-		st.lastError = err.Error()
-		st.lastErrorAt = now
-		st.updatesFail++
-		st.updateErr.Fail(now, err.Error())
 		msg := "DNS update failed"
 		if permanent {
 			msg = "DNS update rejected by provider; check the credentials and hostname"
 		}
-		u.log.Error(msg, append(attrs, "error", err.Error(), "attempt", st.failures, "permanent", permanent,
-			"failing_for", now.Sub(st.updateErr.Since()).Round(time.Second).String(),
-			"retry_in", backoff.String())...)
+		u.log.Error(msg, append(attrs, "permanent", permanent, "retry_in", backoff.String())...)
 		return false
 	} else {
 		attrs = append(attrs, "response", resp)
@@ -478,6 +518,18 @@ func (u *Updater) syncHost(ctx context.Context, hostname string, detected map[ip
 	st.nextAttempt = time.Time{}
 	st.inSync = true
 	return true
+}
+
+// addrForRequest returns the address to send for fam: the detected one, or,
+// if detection failed this cycle, the last address the IP sources agreed on,
+// so the provider keeps that record as it is. DNS answers are deliberately
+// never used here: they are unauthenticated and must not be able to end up
+// in the published record.
+func (u *Updater) addrForRequest(detected map[ipdetect.Family]netip.Addr, fam ipdetect.Family) netip.Addr {
+	if a, ok := detected[fam]; ok {
+		return a
+	}
+	return u.current[fam] // zero if never detected or the family is disabled
 }
 
 // lookupDNS refreshes st.known from the published records.

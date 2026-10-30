@@ -23,6 +23,7 @@ func testHandler(statusPage bool) http.Handler {
 		Families:  []updater.FamilyStatus{{Family: "ipv4", Address: "203.0.113.7", ChangedAt: now.Add(-2 * time.Hour)}},
 		Hosts: []updater.HostStatus{
 			{Hostname: "home.example.com", IPv4: "203.0.113.7", InSync: true, LastUpdate: now.Add(-2 * time.Hour)},
+			{Hostname: "stop.example.com", Stopped: true, Failures: 1, LastError: "No-IP rejected the update: badauth (invalid username or password)"},
 			{Hostname: "lan.example.com", InSync: true, DNSWarning: "DNS returned only non-public ipv4 address(es) 10.0.0.1"},
 			{Hostname: "vpn.example.com", Failures: 2, LastError: "<script>alert(1)</script>", NextAttempt: now.Add(time.Minute)},
 		},
@@ -50,7 +51,7 @@ func TestStatusPage(t *testing.T) {
 		t.Fatalf("status = %d: %s", rec.Code, rec.Body)
 	}
 	body := rec.Body.String()
-	for _, want := range []string{"home.example.com", "203.0.113.7", "In sync", "Update failed", "changed 2h ago", "retry in 1m", "1.2.3", "non-public ipv4 address(es) 10.0.0.1"} {
+	for _, want := range []string{"home.example.com", "203.0.113.7", "In sync", "Update failed", "changed 2h ago", "retry in 1m", "1.2.3", "non-public ipv4 address(es) 10.0.0.1", "Updates stopped", "fix the configuration and restart"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("page does not contain %q", want)
 		}
@@ -85,7 +86,7 @@ func TestStatusJSON(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	if !body.Ready || body.Info.Version != "1.2.3" || body.Info.Interval != "10s" || len(body.Hosts) != 3 {
+	if !body.Ready || body.Info.Version != "1.2.3" || body.Info.Interval != "10s" || len(body.Hosts) != 4 {
 		t.Errorf("unexpected body: %s", rec.Body)
 	}
 }
@@ -130,6 +131,7 @@ func TestMetrics(t *testing.T) {
 		`ddns_updater_ip_detection_success{family="ipv4"} 1`,
 		`ddns_updater_host_in_sync{hostname="home.example.com"} 1`,
 		`ddns_updater_host_in_sync{hostname="vpn.example.com"} 0`,
+		`ddns_updater_host_updates_stopped{hostname="stop.example.com"} 1`,
 		`ddns_updater_host_consecutive_failures{hostname="vpn.example.com"} 2`,
 		`ddns_updater_updates_total{hostname="home.example.com",result="success"} 0`,
 		"# TYPE ddns_updater_updates_total counter",

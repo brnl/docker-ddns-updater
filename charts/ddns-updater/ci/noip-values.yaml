@@ -1,0 +1,7 @@
+provider: noip
+hostnames:
+  - home.ddns.net
+ipv6:
+  enabled: true
+credentials:
+  existingSecret: noip-ddns-key

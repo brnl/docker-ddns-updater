@@ -20,7 +20,7 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
 FROM gcr.io/distroless/static-debian13:nonroot@sha256:18f4cc26c9ffa7f20a359298be7deadac5c607c8e03a02b8119f1a5fc2f82c99
 ARG VERSION=dev
 LABEL org.opencontainers.image.title="ddns-updater" \
-      org.opencontainers.image.description="Monitors the public IP address and updates DDNS records (mijn.host) when it changes" \
+      org.opencontainers.image.description="Monitors the public IP address and updates DDNS records (mijn.host, No-IP) when it changes" \
       org.opencontainers.image.source="https://github.com/brnl/docker-ddns-updater" \
       org.opencontainers.image.version="${VERSION}"
 COPY --from=build /out/ddns-updater /ddns-updater

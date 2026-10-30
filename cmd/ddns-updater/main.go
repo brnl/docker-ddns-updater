@@ -13,6 +13,7 @@ import (
 	"net/netip"
 	"os"
 	"os/signal"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -22,6 +23,7 @@ import (
 	"github.com/brnl/docker-ddns-updater/internal/ipdetect"
 	"github.com/brnl/docker-ddns-updater/internal/provider"
 	"github.com/brnl/docker-ddns-updater/internal/provider/mijnhost"
+	"github.com/brnl/docker-ddns-updater/internal/provider/noip"
 	"github.com/brnl/docker-ddns-updater/internal/updater"
 	"github.com/brnl/docker-ddns-updater/internal/web"
 )
@@ -59,12 +61,18 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	userAgent := fmt.Sprintf("docker-ddns-updater/%s (+https://github.com/brnl/docker-ddns-updater)", version)
+	userAgent := buildUserAgent(cfg.ContactEmail)
 
+	// DDNS_ENDPOINT overrides the provider's update URL (for testing or a
+	// compatible proxy). DDNS_MIJNHOST_ENDPOINT, its older name, only
+	// applies to mijn.host so credentials never go to another provider's URL.
+	endpoint := os.Getenv("DDNS_ENDPOINT")
 	var prov provider.Provider
 	switch cfg.Provider {
 	case "mijnhost":
-		prov = mijnhost.New(os.Getenv("DDNS_MIJNHOST_ENDPOINT"), cfg.Username, cfg.Password, userAgent, cfg.Timeout)
+		prov = mijnhost.New(cmp.Or(endpoint, os.Getenv("DDNS_MIJNHOST_ENDPOINT")), cfg.Username, cfg.Password, userAgent, cfg.Timeout)
+	case "noip":
+		prov = noip.New(endpoint, cfg.Username, cfg.Password, userAgent, cfg.Timeout)
 	}
 
 	var detectors []updater.Detector
@@ -93,6 +101,7 @@ func run() error {
 		"dns_server", cmp.Or(cfg.DNSServer, "system resolver"),
 		"heartbeat_interval", cfg.Heartbeat.String(),
 		"log_level", cfg.LogLevel,
+		"user_agent", userAgent,
 		"dry_run", cfg.DryRun,
 	}
 	if cfg.IPv4Enabled {
@@ -196,6 +205,13 @@ func (f fixedServerResolver) LookupNetIP(ctx context.Context, network, host stri
 		dnsErr.Server = f.server
 	}
 	return addrs, err
+}
+
+// buildUserAgent follows the format No-IP asks update clients to use:
+// "Company NameOfProgram/OSVersion-ReleaseVersion maintainer-contact".
+func buildUserAgent(contact string) string {
+	return fmt.Sprintf("brnl docker-ddns-updater/%s-%s %s", runtime.GOOS, version,
+		cmp.Or(contact, "https://github.com/brnl/docker-ddns-updater"))
 }
 
 func sourcesIf(enabled bool, s []string) []string {

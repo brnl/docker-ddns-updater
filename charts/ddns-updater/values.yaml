@@ -1,4 +1,4 @@
-# -- DDNS provider. Supported: mijnhost
+# -- DDNS provider: mijnhost or noip.
 provider: mijnhost
 
 # -- Hostnames (FQDNs) to keep up to date. Required.
@@ -63,6 +63,9 @@ dnsRecheckInterval: 5m
 dnsServer: ""
 # -- Log what would be updated without calling the provider.
 dryRun: false
+# -- Optional maintainer contact (e-mail) sent in the User-Agent, as No-IP
+# recommends for update clients.
+contactEmail: ""
 # -- How often to log a one-line status summary, so the pod logs show the
 # updater is alive even when nothing changes ("0" disables it). Failures and
 # recoveries are always logged, independent of this setting.

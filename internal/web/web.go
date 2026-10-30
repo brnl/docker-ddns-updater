@@ -140,6 +140,8 @@ func servePage(w http.ResponseWriter, opts Options) {
 	for _, h := range snap.Hosts {
 		v := hostView{HostStatus: h}
 		switch {
+		case h.Stopped:
+			v.State = badge{"Updates stopped", "err"}
 		case h.Failures > 0:
 			v.State = badge{"Update failed", "err"}
 		case h.InSync:

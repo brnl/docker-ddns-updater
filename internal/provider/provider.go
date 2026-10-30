@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"net/netip"
+	"time"
 )
 
 // Request is a single DNS record update. Unset (zero) addresses are omitted.
@@ -24,8 +25,15 @@ type Provider interface {
 
 // PermanentError marks a failure that will not resolve by retrying soon,
 // such as invalid credentials or an unknown hostname. Callers should back off
-// for a long time to avoid being flagged for abuse.
-type PermanentError struct{ Err error }
+// for a long time to avoid being flagged for abuse. If Stop is set, the
+// provider requires that no further updates are sent until the user fixes the
+// configuration (the updater stops until restart): for this hostname only,
+// or for all hostnames when Account is set (bad credentials, blocked client).
+type PermanentError struct {
+	Err     error
+	Stop    bool
+	Account bool
+}
 
 func (e *PermanentError) Error() string { return e.Err.Error() }
 func (e *PermanentError) Unwrap() error { return e.Err }
@@ -34,4 +42,37 @@ func (e *PermanentError) Unwrap() error { return e.Err }
 func IsPermanent(err error) bool {
 	var p *PermanentError
 	return errors.As(err, &p)
+}
+
+// StopsUpdates reports whether err requires stopping updates until the
+// configuration is fixed.
+func StopsUpdates(err error) bool {
+	var p *PermanentError
+	return errors.As(err, &p) && p.Stop
+}
+
+// StopsAllUpdates reports whether err requires stopping updates for every
+// hostname of the account.
+func StopsAllUpdates(err error) bool {
+	var p *PermanentError
+	return errors.As(err, &p) && p.Stop && p.Account
+}
+
+// RetryAfterError is a temporary failure after which the provider requires
+// waiting at least After before the next attempt.
+type RetryAfterError struct {
+	Err   error
+	After time.Duration
+}
+
+func (e *RetryAfterError) Error() string { return e.Err.Error() }
+func (e *RetryAfterError) Unwrap() error { return e.Err }
+
+// RetryAfter returns the minimum wait err asks for, if any.
+func RetryAfter(err error) (time.Duration, bool) {
+	var r *RetryAfterError
+	if errors.As(err, &r) {
+		return r.After, true
+	}
+	return 0, false
 }

@@ -53,6 +53,10 @@ func serveMetrics(w http.ResponseWriter, opts Options) {
 	for _, h := range snap.Hosts {
 		m.sample("ddns_updater_host_dns_warning", boolValue(h.DNSWarning != ""), "hostname", h.Hostname)
 	}
+	m.family("ddns_updater_host_updates_stopped", "gauge", "Whether updates for the hostname are stopped after a provider rejection (until restart).")
+	for _, h := range snap.Hosts {
+		m.sample("ddns_updater_host_updates_stopped", boolValue(h.Stopped), "hostname", h.Hostname)
+	}
 	m.family("ddns_updater_updates_total", "counter", "Provider update requests by result.")
 	for _, h := range snap.Hosts {
 		m.sample("ddns_updater_updates_total", float64(h.UpdatesOK), "hostname", h.Hostname, "result", "success")

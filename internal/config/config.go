@@ -26,6 +26,8 @@ type Config struct {
 	Hostnames []string
 	Username  string
 	Password  string
+	// ContactEmail is sent in the User-Agent, as No-IP recommends.
+	ContactEmail string
 
 	IPv4Enabled bool
 	IPv6Enabled bool
@@ -55,6 +57,7 @@ func Load(lookup func(string) (string, bool)) (*Config, error) {
 		Hostnames:          e.list("DDNS_HOSTNAMES", nil),
 		Username:           e.secret("DDNS_USERNAME"),
 		Password:           e.secret("DDNS_PASSWORD"),
+		ContactEmail:       e.str("DDNS_CONTACT_EMAIL", ""),
 		IPv4Enabled:        e.bool("DDNS_IPV4_ENABLED", true),
 		IPv6Enabled:        e.bool("DDNS_IPV6_ENABLED", false),
 		IPv4Sources:        e.list("DDNS_IPV4_SOURCES", DefaultIPv4Sources),
@@ -83,9 +86,9 @@ func Load(lookup func(string) (string, bool)) (*Config, error) {
 func (c *Config) validate() error {
 	var errs []error
 	switch c.Provider {
-	case "mijnhost":
+	case "mijnhost", "noip":
 	default:
-		errs = append(errs, fmt.Errorf("DDNS_PROVIDER: unsupported provider %q (supported: mijnhost)", c.Provider))
+		errs = append(errs, fmt.Errorf("DDNS_PROVIDER: unsupported provider %q (supported: mijnhost, noip)", c.Provider))
 	}
 	if len(c.Hostnames) == 0 {
 		errs = append(errs, errors.New("DDNS_HOSTNAMES: at least one hostname is required"))
@@ -122,6 +125,9 @@ func (c *Config) validate() error {
 			errs = append(errs, fmt.Errorf("DDNS_DNS_SERVER: %w", err))
 		}
 		c.DNSServer = addr
+	}
+	if c.ContactEmail != "" && !validEmail(c.ContactEmail) {
+		errs = append(errs, fmt.Errorf("DDNS_CONTACT_EMAIL: invalid e-mail address %q", c.ContactEmail))
 	}
 	if c.Heartbeat < 0 {
 		errs = append(errs, errors.New("DDNS_HEARTBEAT_INTERVAL must not be negative"))
@@ -160,6 +166,16 @@ func NormalizeDNSServer(s string) (string, error) {
 		return "", fmt.Errorf("%q is not an IP address or hostname", s)
 	}
 	return net.JoinHostPort(host, port), nil
+}
+
+// validEmail is a deliberately simple check: local@domain, no whitespace or
+// control characters (the value goes into an HTTP header).
+func validEmail(s string) bool {
+	if len(s) > 254 || strings.ContainsFunc(s, func(r rune) bool { return r <= ' ' || r == 0x7f }) {
+		return false
+	}
+	local, domain, ok := strings.Cut(s, "@")
+	return ok && local != "" && !strings.Contains(domain, "@") && validHostname(domain)
 }
 
 func validateSources(name string, sources []string) []error {

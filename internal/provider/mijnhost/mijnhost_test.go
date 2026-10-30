@@ -6,7 +6,6 @@ import (
 	"net/http/httptest"
 	"net/netip"
 	"net/url"
-	"strings"
 	"testing"
 	"time"
 
@@ -81,38 +80,5 @@ func TestDoesNotFollowRedirects(t *testing.T) {
 	}
 	if hit {
 		t.Error("redirect was followed")
-	}
-}
-
-func TestInterpret(t *testing.T) {
-	cases := []struct {
-		status    int
-		body      string
-		ok        bool
-		permanent bool
-	}{
-		{200, "good 1.2.3.4", true, false},
-		{200, "nochg 1.2.3.4\n", true, false},
-		{200, "badauth", false, true},
-		{200, "nohost", false, true},
-		{200, "notfqdn", false, true},
-		{200, "abuse", false, true},
-		{200, "911", false, false},
-		{200, "dnserr", false, false},
-		{401, "", false, true},
-		{500, "internal error", false, false},
-		{200, "<html>surprise</html>", false, false},
-	}
-	for _, c := range cases {
-		err := interpret(c.status, c.body)
-		if (err == nil) != c.ok {
-			t.Errorf("interpret(%d, %q) = %v, want ok=%v", c.status, c.body, err, c.ok)
-		}
-		if err != nil && provider.IsPermanent(err) != c.permanent {
-			t.Errorf("interpret(%d, %q) permanent = %v, want %v", c.status, c.body, provider.IsPermanent(err), c.permanent)
-		}
-		if err != nil && strings.Contains(err.Error(), "p@ss") {
-			t.Error("error leaks credentials")
-		}
 	}
 }

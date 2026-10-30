@@ -9,7 +9,8 @@
     "provider": {
       "type": "string",
       "enum": [
-        "mijnhost"
+        "mijnhost",
+        "noip"
       ]
     },
     "hostnames": {
@@ -157,6 +158,10 @@
     },
     "dryRun": {
       "type": "boolean"
+    },
+    "contactEmail": {
+      "type": "string",
+      "pattern": "^$|^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$"
     },
     "heartbeatInterval": {
       "$ref": "#/definitions/duration"

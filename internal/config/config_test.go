@@ -92,6 +92,8 @@ func TestInvalid(t *testing.T) {
 		"bad dns server": {"DDNS_DNS_SERVER": "not a server!"},
 		"bad dns port":   {"DDNS_DNS_SERVER": "1.1.1.1:99999"},
 		"bad heartbeat":  {"DDNS_HEARTBEAT_INTERVAL": "-1m"},
+		"bad contact":    {"DDNS_CONTACT_EMAIL": "not-an-email"},
+		"contact header": {"DDNS_CONTACT_EMAIL": "a@example.com\r\nX-Evil: 1"},
 	}
 	for name, overrides := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -126,5 +128,28 @@ func TestNormalizeDNSServer(t *testing.T) {
 		if got, err := NormalizeDNSServer(bad); err == nil {
 			t.Errorf("NormalizeDNSServer(%q) = %q, want error", bad, got)
 		}
+	}
+}
+
+func TestProviders(t *testing.T) {
+	for _, p := range []string{"mijnhost", "noip", "NoIP"} {
+		env := base()
+		env["DDNS_PROVIDER"] = p
+		c, err := Load(lookup(env))
+		if err != nil {
+			t.Fatalf("%s: %v", p, err)
+		}
+		if c.Provider != strings.ToLower(p) {
+			t.Errorf("provider = %q", c.Provider)
+		}
+	}
+}
+
+func TestContactEmail(t *testing.T) {
+	env := base()
+	env["DDNS_CONTACT_EMAIL"] = "me@example.com"
+	c, err := Load(lookup(env))
+	if err != nil || c.ContactEmail != "me@example.com" {
+		t.Fatalf("ContactEmail = %q, %v", c.ContactEmail, err)
 	}
 }

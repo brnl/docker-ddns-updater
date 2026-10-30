@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net"
 	"net/netip"
@@ -469,5 +470,119 @@ func TestHeartbeat(t *testing.T) {
 	f.u.Check(ctx)
 	if l := find(f.lines(t), "status: degraded"); l == nil || l.Level != "WARN" {
 		t.Fatalf("degraded heartbeat missing: %+v", l)
+	}
+}
+
+func TestStopOnRejection(t *testing.T) {
+	f := newFixture(time.Minute, ipdetect.IPv4)
+	ctx := context.Background()
+	f.prov.err = &provider.PermanentError{Err: errors.New("badauth"), Stop: true}
+	f.u.Check(ctx)
+	if l := find(f.lines(t), "DNS update rejected by provider; updates for this hostname are stopped"); l == nil || l.Level != "ERROR" {
+		t.Fatalf("stop not logged: %+v", l)
+	}
+	// No further requests, however long we wait or whatever changes.
+	f.prov.err = nil
+	f.v4.addr = ip("203.0.113.9")
+	for i := 0; i < 5; i++ {
+		f.clk.add(24 * time.Hour)
+		f.u.Check(ctx)
+	}
+	if len(f.prov.reqs) != 1 {
+		t.Fatalf("updates sent after stop: %d", len(f.prov.reqs))
+	}
+	h := f.u.Snapshot().Hosts[0]
+	if !h.Stopped || h.InSync || !h.NextAttempt.IsZero() {
+		t.Fatalf("host = %+v", h)
+	}
+	if find(f.lines(t), "status: degraded") == nil {
+		t.Error("heartbeat does not report degraded state")
+	}
+}
+
+func TestRetryAfter(t *testing.T) {
+	f := newFixture(time.Minute, ipdetect.IPv4)
+	ctx := context.Background()
+	f.prov.err = &provider.RetryAfterError{Err: errors.New("911"), After: 30 * time.Minute}
+	f.u.Check(ctx)
+	f.prov.err = nil
+	f.clk.add(29 * time.Minute)
+	f.u.Check(ctx)
+	if len(f.prov.reqs) != 1 {
+		t.Fatalf("retried before 30m: %d requests", len(f.prov.reqs))
+	}
+	f.clk.add(time.Minute)
+	f.u.Check(ctx)
+	if len(f.prov.reqs) != 2 {
+		t.Fatalf("not retried after 30m: %d requests", len(f.prov.reqs))
+	}
+}
+
+func TestAccountWideStop(t *testing.T) {
+	f := newFixture(time.Minute, ipdetect.IPv4)
+	f.u = New(Options{
+		Provider:  f.prov,
+		Detectors: []Detector{f.v4},
+		Hostnames: []string{"a.example.com", "b.example.com", "c.example.com"},
+		Interval:  10 * time.Second, DNSRecheckInterval: time.Minute,
+		Resolver: f.res, Logger: quiet(), Now: f.clk.now,
+	})
+	f.prov.err = &provider.PermanentError{Err: errors.New("badauth"), Stop: true, Account: true}
+	f.u.Check(context.Background())
+	if len(f.prov.reqs) != 1 {
+		t.Fatalf("requests after account-wide rejection = %d, want 1", len(f.prov.reqs))
+	}
+	f.v4.addr = ip("203.0.113.9")
+	f.clk.add(24 * time.Hour)
+	f.u.Check(context.Background())
+	if len(f.prov.reqs) != 1 {
+		t.Fatalf("updates sent after account-wide stop: %d", len(f.prov.reqs))
+	}
+	for _, h := range f.u.Snapshot().Hosts {
+		if !h.Stopped || h.LastError == "" {
+			t.Errorf("host %s not stopped: %+v", h.Hostname, h)
+		}
+	}
+}
+
+func TestKeepsLastKnownAddressWhenDetectionFails(t *testing.T) {
+	f := newFixture(time.Minute, ipdetect.IPv4, ipdetect.IPv6)
+	ctx := context.Background()
+	f.u.Check(ctx) // both families detected and sent
+	// IPv4 changes while IPv6 detection fails: the update must still carry
+	// the known IPv6 address so the AAAA record is not dropped.
+	f.v4.addr = ip("203.0.113.2")
+	f.v6.err = errors.New("no route")
+	f.clk.add(10 * time.Second)
+	f.u.Check(ctx)
+	if len(f.prov.reqs) != 2 {
+		t.Fatalf("requests = %d", len(f.prov.reqs))
+	}
+	r := f.prov.reqs[1]
+	if r.IPv4 != ip("203.0.113.2") || r.IPv6 != ip("2001:db8::1") {
+		t.Fatalf("request = %+v", r)
+	}
+}
+
+func quiet() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
+
+func TestFallbackNeverUsesDNSAnswer(t *testing.T) {
+	f := newFixture(time.Minute, ipdetect.IPv4, ipdetect.IPv6)
+	ctx := context.Background()
+	// DNS (unauthenticated) claims an attacker's AAAA; the first update fails,
+	// so the DNS value stays the "known" record.
+	f.res.records["ip6"] = []netip.Addr{ip("2001:db8::bad")}
+	f.prov.err = errors.New("timeout")
+	f.u.Check(ctx)
+	f.prov.err = nil
+	// Next attempt: IPv6 detection fails and IPv4 changes. The request must
+	// carry the last *detected* IPv6 address, never the DNS answer.
+	f.v6.err = errors.New("no route")
+	f.v4.addr = ip("203.0.113.2")
+	f.clk.add(time.Minute)
+	f.u.Check(ctx)
+	r := f.prov.reqs[len(f.prov.reqs)-1]
+	if r.IPv6 != ip("2001:db8::1") {
+		t.Fatalf("request used %s for IPv6, want the last detected 2001:db8::1", r.IPv6)
 	}
 }
