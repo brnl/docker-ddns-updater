@@ -28,7 +28,7 @@ func TestDefaults(t *testing.T) {
 	if c.Provider != "mijnhost" || c.Interval != time.Minute || !c.IPv4Enabled || c.IPv6Enabled {
 		t.Errorf("unexpected defaults: %+v", c)
 	}
-	if len(c.IPv4Sources) != 2 || c.ListenAddr != ":8080" || !c.StatusPage || !c.Metrics || c.DNSRecheckInterval != 5*time.Minute {
+	if len(c.IPv4Sources) != 2 || c.ListenAddr != ":8080" || !c.StatusPage || !c.Metrics || c.DNSRecheckInterval != 5*time.Minute || c.Heartbeat != time.Hour {
 		t.Errorf("unexpected defaults: %+v", c)
 	}
 }
@@ -91,6 +91,7 @@ func TestInvalid(t *testing.T) {
 		"bad log format": {"DDNS_LOG_FORMAT": "xml"},
 		"bad dns server": {"DDNS_DNS_SERVER": "not a server!"},
 		"bad dns port":   {"DDNS_DNS_SERVER": "1.1.1.1:99999"},
+		"bad heartbeat":  {"DDNS_HEARTBEAT_INTERVAL": "-1m"},
 	}
 	for name, overrides := range cases {
 		t.Run(name, func(t *testing.T) {

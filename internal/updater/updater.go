@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/brnl/docker-ddns-updater/internal/condlog"
 	"github.com/brnl/docker-ddns-updater/internal/ipdetect"
 	"github.com/brnl/docker-ddns-updater/internal/provider"
 )
@@ -51,9 +52,11 @@ type Options struct {
 	DNSRecheckInterval time.Duration
 	Resolver           Resolver
 	Health             HealthReporter
-	DryRun             bool
-	Logger             *slog.Logger
-	Now                func() time.Time
+	// Heartbeat is how often a status summary is logged; 0 disables it.
+	Heartbeat time.Duration
+	DryRun    bool
+	Logger    *slog.Logger
+	Now       func() time.Time
 }
 
 type hostState struct {
@@ -70,6 +73,9 @@ type hostState struct {
 	dnsWarnings map[ipdetect.Family]string
 	updatesOK   uint64
 	updatesFail uint64
+	// failure tracking for logging (start, reminders, recovery)
+	updateErr condlog.Tracker
+	lookupErr map[ipdetect.Family]*condlog.Tracker
 }
 
 type familyState struct {
@@ -120,10 +126,13 @@ type Updater struct {
 	log        *slog.Logger
 	hosts      map[string]*hostState
 	current    map[ipdetect.Family]netip.Addr
-	detectErrs map[ipdetect.Family]string
+	detectErrs map[ipdetect.Family]*condlog.Tracker
 	families   map[ipdetect.Family]*familyState
 	lastCheck  time.Time
 	snapshot   atomic.Pointer[Snapshot]
+
+	started       time.Time
+	lastHeartbeat time.Time
 }
 
 // New returns an Updater.
@@ -139,19 +148,35 @@ func New(opts Options) *Updater {
 	}
 	hosts := make(map[string]*hostState, len(opts.Hostnames))
 	for _, h := range opts.Hostnames {
-		hosts[h] = &hostState{known: map[ipdetect.Family]netip.Addr{}, dnsWarnings: map[ipdetect.Family]string{}}
+		st := &hostState{
+			known:       map[ipdetect.Family]netip.Addr{},
+			dnsWarnings: map[ipdetect.Family]string{},
+			lookupErr:   map[ipdetect.Family]*condlog.Tracker{},
+			// Every failed update is logged already (they are spaced out by
+			// the backoff), so no reminders are needed.
+			updateErr: condlog.Tracker{Reminder: -1},
+		}
+		for _, d := range opts.Detectors {
+			st.lookupErr[d.Family()] = &condlog.Tracker{}
+		}
+		hosts[h] = st
 	}
 	families := map[ipdetect.Family]*familyState{}
+	detectErrs := map[ipdetect.Family]*condlog.Tracker{}
 	for _, d := range opts.Detectors {
 		families[d.Family()] = &familyState{}
+		detectErrs[d.Family()] = &condlog.Tracker{}
 	}
+	now := opts.Now()
 	u := &Updater{
-		opts:       opts,
-		log:        opts.Logger,
-		hosts:      hosts,
-		current:    map[ipdetect.Family]netip.Addr{},
-		detectErrs: map[ipdetect.Family]string{},
-		families:   families,
+		opts:          opts,
+		log:           opts.Logger,
+		hosts:         hosts,
+		current:       map[ipdetect.Family]netip.Addr{},
+		detectErrs:    detectErrs,
+		families:      families,
+		started:       now,
+		lastHeartbeat: now,
 	}
 	u.publish()
 	return u
@@ -250,6 +275,61 @@ func (u *Updater) Check(ctx context.Context) {
 	if u.opts.Health != nil {
 		u.opts.Health.Tick(ok)
 	}
+	u.heartbeat(ok)
+}
+
+// heartbeat periodically logs a one-line status summary, so the logs show
+// the updater is alive and what it believes, even when nothing changes.
+func (u *Updater) heartbeat(ok bool) {
+	now := u.opts.Now()
+	if u.opts.Heartbeat <= 0 || now.Sub(u.lastHeartbeat) < u.opts.Heartbeat {
+		return
+	}
+	u.lastHeartbeat = now
+	snap := u.Snapshot()
+	attrs := []any{"uptime", now.Sub(u.started).Round(time.Second).String()}
+	var detectFailing []string
+	for _, f := range snap.Families {
+		ip := f.Address
+		if ip == "" {
+			ip = "unknown"
+		}
+		attrs = append(attrs, f.Family, ip)
+		if f.Error != "" {
+			detectFailing = append(detectFailing, f.Family)
+		}
+	}
+	var inSync int
+	var outOfSync, failing []string
+	var updatesOK, updatesFail uint64
+	for _, h := range snap.Hosts {
+		updatesOK += h.UpdatesOK
+		updatesFail += h.UpdatesFail
+		switch {
+		case h.Failures > 0:
+			failing = append(failing, h.Hostname)
+		case h.InSync:
+			inSync++
+		default:
+			outOfSync = append(outOfSync, h.Hostname)
+		}
+	}
+	attrs = append(attrs, "hosts", len(snap.Hosts), "in_sync", inSync,
+		"updates_succeeded", updatesOK, "updates_failed", updatesFail)
+	if len(outOfSync) > 0 {
+		attrs = append(attrs, "out_of_sync", strings.Join(outOfSync, ","))
+	}
+	if len(failing) > 0 {
+		attrs = append(attrs, "failing", strings.Join(failing, ","))
+	}
+	if len(detectFailing) > 0 {
+		attrs = append(attrs, "detection_failing", strings.Join(detectFailing, ","))
+	}
+	if ok {
+		u.log.Info("status: all hostnames up to date", attrs...)
+	} else {
+		u.log.Warn("status: degraded", attrs...)
+	}
 }
 
 func (u *Updater) detect(ctx context.Context) map[ipdetect.Family]netip.Addr {
@@ -272,22 +352,24 @@ func (u *Updater) detect(ctx context.Context) map[ipdetect.Family]netip.Addr {
 	detected := map[ipdetect.Family]netip.Addr{}
 	for i, d := range u.opts.Detectors {
 		fam, r := d.Family(), results[i]
+		tr, now := u.detectErrs[fam], u.opts.Now()
 		if r.err != nil {
 			if ctx.Err() != nil {
 				continue
 			}
-			// Only log when the error changes, to avoid a log line every tick.
-			if msg := r.err.Error(); u.detectErrs[fam] != msg {
-				u.log.Warn("public IP detection failed", "family", fam.String(), "error", msg)
-				u.detectErrs[fam] = msg
+			// Logged when it starts, changes, and as a periodic reminder.
+			if ev := tr.Fail(now, r.err.Error()); ev != condlog.None {
+				u.log.Error("public IP detection failed; DNS records for this family are not updated",
+					"family", fam.String(), "error", r.err.Error(), "state", ev.String(),
+					"failing_for", now.Sub(tr.Since()).Round(time.Second).String(), "attempts", tr.Count())
 			}
 			u.families[fam].err = r.err.Error()
 			u.families[fam].detectFail++
 			continue
 		}
-		if u.detectErrs[fam] != "" {
-			u.log.Info("public IP detection recovered", "family", fam.String())
-			delete(u.detectErrs, fam)
+		if ok, dur, n := tr.Recover(now); ok {
+			u.log.Info("public IP detection recovered", "family", fam.String(), "ip", r.addr.String(),
+				"after", dur.Round(time.Second).String(), "failed_attempts", n)
 		}
 		u.families[fam].err = ""
 		u.families[fam].detectOK++
@@ -314,9 +396,12 @@ func (u *Updater) syncHost(ctx context.Context, hostname string, detected map[ip
 	if now.Before(st.nextAttempt) {
 		return false
 	}
-	if st.lastSync.IsZero() || (u.opts.DNSRecheckInterval > 0 && now.Sub(st.lastSync) >= u.opts.DNSRecheckInterval) {
+	if first := st.lastSync.IsZero(); first || (u.opts.DNSRecheckInterval > 0 && now.Sub(st.lastSync) >= u.opts.DNSRecheckInterval) {
 		u.lookupDNS(ctx, hostname, st, detected)
 		st.lastSync = now
+		if first {
+			u.logInitialState(hostname, st, detected)
+		}
 	}
 
 	var changed []any
@@ -348,23 +433,36 @@ func (u *Updater) syncHost(ctx context.Context, hostname string, detected map[ip
 
 	if u.opts.DryRun {
 		u.log.Info("dry run: would update DNS record", attrs...)
-	} else if err := u.opts.Provider.Update(ctx, req); err != nil {
+	} else if resp, err := u.opts.Provider.Update(ctx, req); err != nil {
 		if ctx.Err() != nil {
 			return false
 		}
 		st.failures++
 		backoff := u.backoff(st.failures)
-		if provider.IsPermanent(err) {
+		permanent := provider.IsPermanent(err)
+		if permanent {
 			backoff = permanentBackoff
 		}
 		st.nextAttempt = now.Add(backoff)
 		st.lastError = err.Error()
 		st.lastErrorAt = now
 		st.updatesFail++
-		u.log.Error("DNS update failed", append(attrs, "error", err.Error(), "retry_in", backoff.String())...)
+		st.updateErr.Fail(now, err.Error())
+		msg := "DNS update failed"
+		if permanent {
+			msg = "DNS update rejected by provider; check the credentials and hostname"
+		}
+		u.log.Error(msg, append(attrs, "error", err.Error(), "attempt", st.failures, "permanent", permanent,
+			"failing_for", now.Sub(st.updateErr.Since()).Round(time.Second).String(),
+			"retry_in", backoff.String())...)
 		return false
 	} else {
-		u.log.Info("DNS record updated", attrs...)
+		attrs = append(attrs, "response", resp)
+		if ok, dur, n := st.updateErr.Recover(now); ok {
+			u.log.Info("DNS update recovered", append(attrs, "after", dur.Round(time.Second).String(), "failed_attempts", n)...)
+		} else {
+			u.log.Info("DNS record updated", attrs...)
+		}
 	}
 
 	for fam, addr := range detected {
@@ -396,15 +494,26 @@ func (u *Updater) lookupDNS(ctx context.Context, hostname string, st *hostState,
 			network = "ip6"
 		}
 		addrs, err := u.opts.Resolver.LookupNetIP(ctx, network, hostname)
-		if err != nil {
-			var dnsErr *net.DNSError
-			if errors.As(err, &dnsErr) && dnsErr.IsNotFound {
-				st.known[fam] = netip.Addr{}
-				u.setDNSWarning(hostname, st, fam, "")
-				u.log.Debug("no DNS record found", "hostname", hostname, "family", fam.String())
-			} else {
-				u.log.Debug("DNS lookup failed", "hostname", hostname, "family", fam.String(), "error", err.Error())
+		tr, now := st.lookupErr[fam], u.opts.Now()
+		var dnsErr *net.DNSError
+		if err != nil && !(errors.As(err, &dnsErr) && dnsErr.IsNotFound) {
+			if ctx.Err() == nil {
+				if ev := tr.Fail(now, err.Error()); ev != condlog.None {
+					u.log.Warn("DNS lookup failed; keeping the last known record", "hostname", hostname,
+						"family", fam.String(), "error", err.Error(), "state", ev.String(),
+						"failing_for", now.Sub(tr.Since()).Round(time.Second).String(), "attempts", tr.Count())
+				}
 			}
+			continue
+		}
+		if ok, dur, n := tr.Recover(now); ok {
+			u.log.Info("DNS lookup recovered", "hostname", hostname, "family", fam.String(),
+				"after", dur.Round(time.Second).String(), "failed_attempts", n)
+		}
+		if err != nil { // not found
+			st.known[fam] = netip.Addr{}
+			u.setDNSWarning(hostname, st, fam, "")
+			u.log.Debug("no DNS record found", "hostname", hostname, "family", fam.String())
 			continue
 		}
 		var (
@@ -436,6 +545,35 @@ func (u *Updater) lookupDNS(ctx context.Context, hostname string, st *hostState,
 			u.log.Debug("DNS record differs from last known value", "hostname", hostname, "family", fam.String(), "dns", published.String())
 		}
 		st.known[fam] = published
+	}
+}
+
+// logInitialState logs, once per hostname at startup, what DNS currently
+// publishes compared to the detected public address.
+func (u *Updater) logInitialState(hostname string, st *hostState, detected map[ipdetect.Family]netip.Addr) {
+	attrs := []any{"hostname", hostname}
+	inSync := true
+	for _, fam := range []ipdetect.Family{ipdetect.IPv4, ipdetect.IPv6} {
+		cur, ok := detected[fam]
+		if !ok {
+			continue
+		}
+		dns := "none"
+		switch {
+		case st.known[fam].IsValid():
+			dns = st.known[fam].String()
+		case st.lookupErr[fam].Failing():
+			dns = "unknown (lookup failed)"
+		case st.dnsWarnings[fam] != "":
+			dns = "unknown (only non-public answers)"
+		}
+		attrs = append(attrs, fam.String()+"_dns", dns, fam.String()+"_public", cur.String())
+		inSync = inSync && st.known[fam] == cur
+	}
+	if inSync {
+		u.log.Info("DNS record is up to date", attrs...)
+	} else {
+		u.log.Info("DNS record differs from the public IP; updating", attrs...)
 	}
 }
 

@@ -158,6 +158,9 @@
     "dryRun": {
       "type": "boolean"
     },
+    "heartbeatInterval": {
+      "$ref": "#/definitions/duration"
+    },
     "log": {
       "type": "object",
       "additionalProperties": false,

@@ -3,12 +3,14 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"os/signal"
 	"strings"
@@ -67,10 +69,10 @@ func run() error {
 
 	var detectors []updater.Detector
 	if cfg.IPv4Enabled {
-		detectors = append(detectors, ipdetect.New(ipdetect.IPv4, cfg.IPv4Sources, cfg.Timeout, userAgent))
+		detectors = append(detectors, ipdetect.New(ipdetect.IPv4, cfg.IPv4Sources, cfg.Timeout, userAgent, log))
 	}
 	if cfg.IPv6Enabled {
-		detectors = append(detectors, ipdetect.New(ipdetect.IPv6, cfg.IPv6Sources, cfg.Timeout, userAgent))
+		detectors = append(detectors, ipdetect.New(ipdetect.IPv6, cfg.IPv6Sources, cfg.Timeout, userAgent, log))
 	}
 
 	// A cycle can include IP detection plus a DNS lookup and an update per
@@ -78,16 +80,31 @@ func run() error {
 	staleness := 3*cfg.Interval + time.Duration(2+3*len(cfg.Hostnames))*cfg.Timeout
 	status := health.NewStatus(staleness)
 
-	log.Info("starting ddns-updater",
+	// The effective configuration, without credentials.
+	startAttrs := []any{
 		"version", version,
 		"provider", prov.Name(),
 		"hostnames", strings.Join(cfg.Hostnames, ","),
 		"ipv4", cfg.IPv4Enabled,
 		"ipv6", cfg.IPv6Enabled,
 		"interval", cfg.Interval.String(),
+		"timeout", cfg.Timeout.String(),
 		"dns_recheck_interval", cfg.DNSRecheckInterval.String(),
+		"dns_server", cmp.Or(cfg.DNSServer, "system resolver"),
+		"heartbeat_interval", cfg.Heartbeat.String(),
+		"log_level", cfg.LogLevel,
 		"dry_run", cfg.DryRun,
-	)
+	}
+	if cfg.IPv4Enabled {
+		startAttrs = append(startAttrs, "ipv4_sources", strings.Join(cfg.IPv4Sources, ","))
+	}
+	if cfg.IPv6Enabled {
+		startAttrs = append(startAttrs, "ipv6_sources", strings.Join(cfg.IPv6Sources, ","))
+	}
+	log.Info("starting ddns-updater", startAttrs...)
+	if cfg.DryRun {
+		log.Warn("dry run enabled: DNS records will not be changed")
+	}
 
 	u := updater.New(updater.Options{
 		Provider:           prov,
@@ -99,6 +116,7 @@ func run() error {
 		Health:             status,
 		DryRun:             cfg.DryRun,
 		Logger:             log,
+		Heartbeat:          cfg.Heartbeat,
 	})
 
 	if addr := listenAddr(cfg.ListenAddr); addr != "" {
@@ -147,17 +165,37 @@ func newLogger(cfg *config.Config) *slog.Logger {
 // newResolver returns the system resolver, or one that sends all queries to
 // server (a host:port normalized by config). A hostname in server is resolved
 // once per connection with the system resolver.
-func newResolver(server string, timeout time.Duration) *net.Resolver {
+func newResolver(server string, timeout time.Duration) updater.Resolver {
 	if server == "" {
 		return net.DefaultResolver
 	}
 	dialer := &net.Dialer{Timeout: timeout}
-	return &net.Resolver{
-		PreferGo: true,
-		Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
-			return dialer.DialContext(ctx, network, server)
+	return fixedServerResolver{
+		server: server,
+		r: &net.Resolver{
+			PreferGo: true,
+			Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
+				return dialer.DialContext(ctx, network, server)
+			},
 		},
 	}
+}
+
+// fixedServerResolver reports the configured server in lookup errors; the Go
+// resolver would otherwise name the server from /etc/resolv.conf, which was
+// not actually queried.
+type fixedServerResolver struct {
+	r      *net.Resolver
+	server string
+}
+
+func (f fixedServerResolver) LookupNetIP(ctx context.Context, network, host string) ([]netip.Addr, error) {
+	addrs, err := f.r.LookupNetIP(ctx, network, host)
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		dnsErr.Server = f.server
+	}
+	return addrs, err
 }
 
 func sourcesIf(enabled bool, s []string) []string {

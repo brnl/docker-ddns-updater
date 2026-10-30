@@ -8,12 +8,15 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/netip"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/brnl/docker-ddns-updater/internal/condlog"
 )
 
 // Family is an IP address family.
@@ -42,16 +45,24 @@ func (f Family) network() string {
 const maxBodySize = 256
 
 // Detector queries a set of sources for the public address of one family.
+// Detect must not be called concurrently on the same Detector.
 type Detector struct {
 	family    Family
 	sources   []string
 	client    *http.Client
 	userAgent string
+	log       *slog.Logger
+	// per-source failure tracking, so a failing source is visible in the
+	// logs even while the other sources still provide an address.
+	sourceErrs map[string]*condlog.Tracker
 }
 
 // New returns a Detector that only connects over the given address family,
 // so each source reports the address of that family.
-func New(family Family, sources []string, timeout time.Duration, userAgent string) *Detector {
+func New(family Family, sources []string, timeout time.Duration, userAgent string, log *slog.Logger) *Detector {
+	if log == nil {
+		log = slog.New(slog.DiscardHandler)
+	}
 	dialer := &net.Dialer{Timeout: timeout}
 	network := family.network()
 	transport := &http.Transport{
@@ -67,11 +78,17 @@ func New(family Family, sources []string, timeout time.Duration, userAgent strin
 		// behind (or stalled by) a connection opened from the old address.
 		DisableKeepAlives: true,
 	}
+	trackers := make(map[string]*condlog.Tracker, len(sources))
+	for _, s := range sources {
+		trackers[s] = &condlog.Tracker{}
+	}
 	return &Detector{
-		family:    family,
-		sources:   sources,
-		client:    &http.Client{Transport: transport, Timeout: timeout},
-		userAgent: userAgent,
+		family:     family,
+		sources:    sources,
+		client:     &http.Client{Transport: transport, Timeout: timeout},
+		userAgent:  userAgent,
+		log:        log,
+		sourceErrs: trackers,
 	}
 }
 
@@ -99,6 +116,11 @@ func (d *Detector) Detect(ctx context.Context) (netip.Addr, error) {
 		}()
 	}
 	wg.Wait()
+	if ctx.Err() == nil {
+		for _, r := range results {
+			d.logSource(r.source, r.err)
+		}
+	}
 
 	var (
 		found netip.Addr
@@ -118,6 +140,24 @@ func (d *Detector) Detect(ctx context.Context) (netip.Addr, error) {
 		return netip.Addr{}, fmt.Errorf("no source returned a valid %s address: %w", d.family, errors.Join(errs...))
 	}
 	return found, nil
+}
+
+// logSource logs a source's failure (when it starts, changes or persists)
+// and its recovery.
+func (d *Detector) logSource(source string, err error) {
+	tr, now := d.sourceErrs[source], time.Now()
+	if err == nil {
+		if ok, dur, n := tr.Recover(now); ok {
+			d.log.Info("IP source recovered", "family", d.family.String(), "source", source,
+				"after", dur.Round(time.Second).String(), "failed_attempts", n)
+		}
+		return
+	}
+	if ev := tr.Fail(now, err.Error()); ev != condlog.None {
+		d.log.Warn("IP source failed", "family", d.family.String(), "source", source,
+			"error", err.Error(), "state", ev.String(),
+			"failing_for", now.Sub(tr.Since()).Round(time.Second).String(), "attempts", tr.Count())
+	}
 }
 
 func (d *Detector) query(ctx context.Context, src string) (netip.Addr, error) {

@@ -89,6 +89,8 @@ spec:
             {{- end }}
             - name: DDNS_DRY_RUN
               value: {{ .Values.dryRun | quote }}
+            - name: DDNS_HEARTBEAT_INTERVAL
+              value: {{ .Values.heartbeatInterval | quote }}
             - name: DDNS_LISTEN_ADDR
               value: {{ printf ":%d" (int .Values.containerPort) | quote }}
             - name: DDNS_STATUS_PAGE

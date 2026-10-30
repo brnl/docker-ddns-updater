@@ -63,6 +63,10 @@ dnsRecheckInterval: 5m
 dnsServer: ""
 # -- Log what would be updated without calling the provider.
 dryRun: false
+# -- How often to log a one-line status summary, so the pod logs show the
+# updater is alive even when nothing changes ("0" disables it). Failures and
+# recoveries are always logged, independent of this setting.
+heartbeatInterval: 1h
 
 log:
   level: info # debug, info, warn, error

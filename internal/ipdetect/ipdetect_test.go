@@ -1,9 +1,12 @@
 package ipdetect
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -68,7 +71,7 @@ func TestDetect(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			d := New(IPv4, c.sources, 2*time.Second, "test")
+			d := New(IPv4, c.sources, 2*time.Second, "test", nil)
 			addr, err := d.Detect(context.Background())
 			if c.want == "" {
 				if err == nil {
@@ -83,5 +86,38 @@ func TestDetect(t *testing.T) {
 				t.Errorf("got %s, want %s", addr, c.want)
 			}
 		})
+	}
+}
+
+func TestLogsSourceFailureAndRecovery(t *testing.T) {
+	healthy := true
+	flaky := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if !healthy {
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		_, _ = w.Write([]byte("203.0.113.7"))
+	}))
+	defer flaky.Close()
+	good := server(t, 200, "203.0.113.7")
+
+	var logs bytes.Buffer
+	d := New(IPv4, []string{good, flaky.URL}, 2*time.Second, "test", slog.New(slog.NewTextHandler(&logs, nil)))
+	ctx := context.Background()
+
+	healthy = false
+	if addr, err := d.Detect(ctx); err != nil || addr.String() != "203.0.113.7" {
+		t.Fatalf("Detect = %s, %v", addr, err)
+	}
+	if !strings.Contains(logs.String(), "IP source failed") || !strings.Contains(logs.String(), flaky.URL) {
+		t.Fatalf("failing source not logged while consensus held: %s", logs.String())
+	}
+	logs.Reset()
+	if _, err := d.Detect(ctx); err != nil || logs.Len() != 0 {
+		t.Fatalf("repeated failure logged again: %v %s", err, logs.String())
+	}
+	healthy = true
+	if _, err := d.Detect(ctx); err != nil || !strings.Contains(logs.String(), "IP source recovered") {
+		t.Fatalf("recovery not logged: %v %s", err, logs.String())
 	}
 }

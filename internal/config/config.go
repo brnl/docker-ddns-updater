@@ -36,6 +36,7 @@ type Config struct {
 	Timeout            time.Duration
 	DNSRecheckInterval time.Duration
 	DNSServer          string
+	Heartbeat          time.Duration
 
 	DryRun     bool
 	ListenAddr string
@@ -62,6 +63,7 @@ func Load(lookup func(string) (string, bool)) (*Config, error) {
 		Timeout:            e.duration("DDNS_TIMEOUT", 10*time.Second),
 		DNSRecheckInterval: e.duration("DDNS_DNS_RECHECK_INTERVAL", 5*time.Minute),
 		DNSServer:          e.str("DDNS_DNS_SERVER", ""),
+		Heartbeat:          e.duration("DDNS_HEARTBEAT_INTERVAL", time.Hour),
 		DryRun:             e.bool("DDNS_DRY_RUN", false),
 		ListenAddr:         e.str("DDNS_LISTEN_ADDR", ":8080"),
 		StatusPage:         e.bool("DDNS_STATUS_PAGE", true),
@@ -120,6 +122,9 @@ func (c *Config) validate() error {
 			errs = append(errs, fmt.Errorf("DDNS_DNS_SERVER: %w", err))
 		}
 		c.DNSServer = addr
+	}
+	if c.Heartbeat < 0 {
+		errs = append(errs, errors.New("DDNS_HEARTBEAT_INTERVAL must not be negative"))
 	}
 	if c.DNSRecheckInterval < 0 {
 		errs = append(errs, errors.New("DDNS_DNS_RECHECK_INTERVAL must not be negative"))

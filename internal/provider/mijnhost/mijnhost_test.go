@@ -22,13 +22,16 @@ func TestUpdateRequest(t *testing.T) {
 	defer srv.Close()
 
 	p := New(srv.URL+"/nic/update", "user", "p@ss:word", "ua/1", time.Second)
-	err := p.Update(context.Background(), provider.Request{
+	resp, err := p.Update(context.Background(), provider.Request{
 		Hostname: "home.example.com",
 		IPv4:     netip.MustParseAddr("203.0.113.7"),
 		IPv6:     netip.MustParseAddr("2001:db8::1"),
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if resp != "good 203.0.113.7" {
+		t.Errorf("response = %q", resp)
 	}
 	if got.URL.Path != "/nic/update" {
 		t.Errorf("path = %s", got.URL.Path)
@@ -54,13 +57,13 @@ func TestUpdateOmitsUnsetFamilies(t *testing.T) {
 	defer srv.Close()
 
 	p := New(srv.URL, "u", "p", "ua", time.Second)
-	if err := p.Update(context.Background(), provider.Request{Hostname: "h.example.com", IPv6: netip.MustParseAddr("2001:db8::1")}); err != nil {
+	if _, err := p.Update(context.Background(), provider.Request{Hostname: "h.example.com", IPv6: netip.MustParseAddr("2001:db8::1")}); err != nil {
 		t.Fatal(err)
 	}
 	if query.Has("myip") || query.Get("myipv6") != "2001:db8::1" {
 		t.Errorf("query = %v", query)
 	}
-	if err := p.Update(context.Background(), provider.Request{Hostname: "h.example.com"}); err == nil {
+	if _, err := p.Update(context.Background(), provider.Request{Hostname: "h.example.com"}); err == nil {
 		t.Error("expected error for request without addresses")
 	}
 }
@@ -73,7 +76,7 @@ func TestDoesNotFollowRedirects(t *testing.T) {
 	defer srv.Close()
 
 	p := New(srv.URL, "u", "p", "ua", time.Second)
-	if err := p.Update(context.Background(), provider.Request{Hostname: "h.example.com", IPv4: netip.MustParseAddr("203.0.113.7")}); err == nil {
+	if _, err := p.Update(context.Background(), provider.Request{Hostname: "h.example.com", IPv4: netip.MustParseAddr("203.0.113.7")}); err == nil {
 		t.Error("expected error on redirect")
 	}
 	if hit {
