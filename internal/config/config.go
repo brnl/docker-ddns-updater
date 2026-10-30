@@ -83,9 +83,9 @@ func Load(lookup func(string) (string, bool)) (*Config, error) {
 func (c *Config) validate() error {
 	var errs []error
 	switch c.Provider {
-	case "mijnhost":
+	case "mijnhost", "noip":
 	default:
-		errs = append(errs, fmt.Errorf("DDNS_PROVIDER: unsupported provider %q (supported: mijnhost)", c.Provider))
+		errs = append(errs, fmt.Errorf("DDNS_PROVIDER: unsupported provider %q (supported: mijnhost, noip)", c.Provider))
 	}
 	if len(c.Hostnames) == 0 {
 		errs = append(errs, errors.New("DDNS_HOSTNAMES: at least one hostname is required"))

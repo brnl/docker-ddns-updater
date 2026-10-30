@@ -1,4 +1,4 @@
-# -- DDNS provider. Supported: mijnhost
+# -- DDNS provider: mijnhost or noip.
 provider: mijnhost
 
 # -- Hostnames (FQDNs) to keep up to date. Required.

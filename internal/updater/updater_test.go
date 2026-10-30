@@ -471,3 +471,48 @@ func TestHeartbeat(t *testing.T) {
 		t.Fatalf("degraded heartbeat missing: %+v", l)
 	}
 }
+
+func TestStopOnRejection(t *testing.T) {
+	f := newFixture(time.Minute, ipdetect.IPv4)
+	ctx := context.Background()
+	f.prov.err = &provider.PermanentError{Err: errors.New("badauth"), Stop: true}
+	f.u.Check(ctx)
+	if l := find(f.lines(t), "DNS update rejected by provider; updates for this hostname are stopped"); l == nil || l.Level != "ERROR" {
+		t.Fatalf("stop not logged: %+v", l)
+	}
+	// No further requests, however long we wait or whatever changes.
+	f.prov.err = nil
+	f.v4.addr = ip("203.0.113.9")
+	for i := 0; i < 5; i++ {
+		f.clk.add(24 * time.Hour)
+		f.u.Check(ctx)
+	}
+	if len(f.prov.reqs) != 1 {
+		t.Fatalf("updates sent after stop: %d", len(f.prov.reqs))
+	}
+	h := f.u.Snapshot().Hosts[0]
+	if !h.Stopped || h.InSync || !h.NextAttempt.IsZero() {
+		t.Fatalf("host = %+v", h)
+	}
+	if find(f.lines(t), "status: degraded") == nil {
+		t.Error("heartbeat does not report degraded state")
+	}
+}
+
+func TestRetryAfter(t *testing.T) {
+	f := newFixture(time.Minute, ipdetect.IPv4)
+	ctx := context.Background()
+	f.prov.err = &provider.RetryAfterError{Err: errors.New("911"), After: 30 * time.Minute}
+	f.u.Check(ctx)
+	f.prov.err = nil
+	f.clk.add(29 * time.Minute)
+	f.u.Check(ctx)
+	if len(f.prov.reqs) != 1 {
+		t.Fatalf("retried before 30m: %d requests", len(f.prov.reqs))
+	}
+	f.clk.add(time.Minute)
+	f.u.Check(ctx)
+	if len(f.prov.reqs) != 2 {
+		t.Fatalf("not retried after 30m: %d requests", len(f.prov.reqs))
+	}
+}

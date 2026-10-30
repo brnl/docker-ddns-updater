@@ -9,7 +9,8 @@
     "provider": {
       "type": "string",
       "enum": [
-        "mijnhost"
+        "mijnhost",
+        "noip"
       ]
     },
     "hostnames": {

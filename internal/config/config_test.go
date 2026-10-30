@@ -128,3 +128,17 @@ func TestNormalizeDNSServer(t *testing.T) {
 		}
 	}
 }
+
+func TestProviders(t *testing.T) {
+	for _, p := range []string{"mijnhost", "noip", "NoIP"} {
+		env := base()
+		env["DDNS_PROVIDER"] = p
+		c, err := Load(lookup(env))
+		if err != nil {
+			t.Fatalf("%s: %v", p, err)
+		}
+		if c.Provider != strings.ToLower(p) {
+			t.Errorf("provider = %q", c.Provider)
+		}
+	}
+}

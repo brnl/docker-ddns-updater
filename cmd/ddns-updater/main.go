@@ -22,6 +22,7 @@ import (
 	"github.com/brnl/docker-ddns-updater/internal/ipdetect"
 	"github.com/brnl/docker-ddns-updater/internal/provider"
 	"github.com/brnl/docker-ddns-updater/internal/provider/mijnhost"
+	"github.com/brnl/docker-ddns-updater/internal/provider/noip"
 	"github.com/brnl/docker-ddns-updater/internal/updater"
 	"github.com/brnl/docker-ddns-updater/internal/web"
 )
@@ -61,10 +62,15 @@ func run() error {
 
 	userAgent := fmt.Sprintf("docker-ddns-updater/%s (+https://github.com/brnl/docker-ddns-updater)", version)
 
+	// DDNS_ENDPOINT overrides the provider's update URL (for testing or a
+	// compatible proxy); DDNS_MIJNHOST_ENDPOINT is its older name.
+	endpoint := cmp.Or(os.Getenv("DDNS_ENDPOINT"), os.Getenv("DDNS_MIJNHOST_ENDPOINT"))
 	var prov provider.Provider
 	switch cfg.Provider {
 	case "mijnhost":
-		prov = mijnhost.New(os.Getenv("DDNS_MIJNHOST_ENDPOINT"), cfg.Username, cfg.Password, userAgent, cfg.Timeout)
+		prov = mijnhost.New(endpoint, cfg.Username, cfg.Password, userAgent, cfg.Timeout)
+	case "noip":
+		prov = noip.New(endpoint, cfg.Username, cfg.Password, userAgent, cfg.Timeout)
 	}
 
 	var detectors []updater.Detector

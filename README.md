@@ -8,6 +8,7 @@ Supported providers:
 | Provider | `DDNS_PROVIDER` | IPv4 | IPv6 |
 | -------- | --------------- | ---- | ---- |
 | [mijn.host](https://mijn.host) | `mijnhost` | ✅ | ✅ |
+| [No-IP](https://www.noip.com) | `noip` | ✅ | ✅ |
 
 ## Features
 
@@ -19,8 +20,10 @@ Supported providers:
   last successful update in between.
 - **Cross-checks IP sources.** All sources are queried in parallel and must
   agree; a single faulty or compromised source cannot redirect your DNS.
-- Backs off exponentially on errors, and for an hour on permanent errors such
-  as bad credentials or an unknown hostname, so you won't be flagged for abuse.
+- Follows each provider's rules for errors, so you won't be flagged for abuse:
+  exponential backoff, a long pause (mijn.host) or a full stop until the
+  configuration is fixed (No-IP) on bad credentials or an unknown hostname,
+  and No-IP's 30-minute wait after server errors.
 - Ignores split-horizon DNS answers: only public addresses count as the
   published record.
 - A built-in **status page**, Prometheus **metrics** with an optional
@@ -215,7 +218,7 @@ All settings are environment variables.
 
 | Variable | Default | Description |
 | -------- | ------- | ----------- |
-| `DDNS_PROVIDER` | `mijnhost` | DDNS provider |
+| `DDNS_PROVIDER` | `mijnhost` | DDNS provider: `mijnhost` or `noip` |
 | `DDNS_HOSTNAMES` | — | Comma-separated hostnames to update (required) |
 | `DDNS_USERNAME` / `DDNS_USERNAME_FILE` | — | DynDNS username, or a file containing it (required) |
 | `DDNS_PASSWORD` / `DDNS_PASSWORD_FILE` | — | DynDNS password, or a file containing it (required) |
@@ -228,6 +231,7 @@ All settings are environment variables.
 | `DDNS_DNS_RECHECK_INTERVAL` | `5m` | How often to compare with the published DNS record (`0` = only at startup) |
 | `DDNS_DNS_SERVER` | system resolver | DNS server for record lookups: an IP address or hostname with an optional port, e.g. `1.1.1.1`, `dns.quad9.net` or `[2606:4700:4700::1111]:53` |
 | `DDNS_DRY_RUN` | `false` | Log what would be updated without calling the provider |
+| `DDNS_ENDPOINT` | provider default | Override the provider's update URL (testing) |
 | `DDNS_HEARTBEAT_INTERVAL` | `1h` | How often to log a one-line status summary (`0` disables it) |
 | `DDNS_LISTEN_ADDR` | `:8080` | Address for the status page and health endpoints (`off` disables it) |
 | `DDNS_STATUS_PAGE` | `true` | Serve the status page on `/` and `/status.json` |
@@ -265,6 +269,31 @@ request's source address. The dyndns2 responses `good` and `nochg` count as
 success. `badauth`, `nohost`, `notfqdn` and `abuse` are permanent errors and
 pause updates for that hostname for an hour. `911` and `dnserr` are retried
 with exponential backoff.
+
+### No-IP
+
+Updates follow No-IP's [update protocol](https://www.noip.com/integrate/request):
+
+```
+https://dynupdate.no-ip.com/nic/update?hostname=<hostname>&myip=<ipv4>,<ipv6>
+```
+
+- `DDNS_USERNAME` is your No-IP account e-mail address, or the username of a
+  DDNS Key (recommended: a key only grants dynamic updates).
+- For dual-stack hostnames both addresses go in `myip`, comma-separated, as
+  No-IP prefers; with only one family enabled only that address is sent.
+- As No-IP requires, an error response (`nohost`, `badauth`, `badagent`,
+  `!donator`, `abuse`) **stops all updates for that hostname** until you fix
+  the configuration and restart the updater. Clients that keep retrying risk
+  being blocked. The status page shows "Updates stopped", and
+  `ddns_updater_host_updates_stopped` is set.
+- After a server error (`911` or HTTP 5xx) the next attempt waits at least
+  30 minutes.
+- No-IP groups are not supported: every entry in `DDNS_HOSTNAMES` must be a
+  hostname. Free No-IP hostnames must still be confirmed periodically on the
+  No-IP website; the updater cannot do that for you.
+
+`DDNS_ENDPOINT` overrides the provider's update URL, e.g. for testing.
 
 ## Logging
 
