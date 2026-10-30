@@ -17,7 +17,9 @@ type Request struct {
 // Provider updates DNS records at a DDNS service.
 type Provider interface {
 	Name() string
-	Update(ctx context.Context, req Request) error
+	// Update applies req. On success it returns the provider's (short,
+	// non-sensitive) response, such as "good 203.0.113.7", for logging.
+	Update(ctx context.Context, req Request) (string, error)
 }
 
 // PermanentError marks a failure that will not resolve by retrying soon,

@@ -102,6 +102,7 @@ Notable values (see [`values.yaml`](charts/ddns-updater/values.yaml) for all):
 | `interval` | `60s` | How often to check the public IP |
 | `dnsRecheckInterval` | `5m` | How often to compare with the published DNS record |
 | `dnsServer` | `""` | DNS server for record lookups; set it with split-horizon DNS (see below) |
+| `heartbeatInterval` | `1h` | How often to log a status summary (`0` disables it) |
 | `hostNetwork` | `false` | Use the node's network (see below) |
 | `statusPage.enabled` | `true` | Serve the status page |
 | `metrics.enabled` | `true` | Serve Prometheus metrics on `/metrics` |
@@ -227,6 +228,7 @@ All settings are environment variables.
 | `DDNS_DNS_RECHECK_INTERVAL` | `5m` | How often to compare with the published DNS record (`0` = only at startup) |
 | `DDNS_DNS_SERVER` | system resolver | DNS server for record lookups: an IP address or hostname with an optional port, e.g. `1.1.1.1`, `dns.quad9.net` or `[2606:4700:4700::1111]:53` |
 | `DDNS_DRY_RUN` | `false` | Log what would be updated without calling the provider |
+| `DDNS_HEARTBEAT_INTERVAL` | `1h` | How often to log a one-line status summary (`0` disables it) |
 | `DDNS_LISTEN_ADDR` | `:8080` | Address for the status page and health endpoints (`off` disables it) |
 | `DDNS_STATUS_PAGE` | `true` | Serve the status page on `/` and `/status.json` |
 | `DDNS_METRICS` | `true` | Serve Prometheus metrics on `/metrics` |
@@ -263,6 +265,28 @@ request's source address. The dyndns2 responses `good` and `nochg` count as
 success. `badauth`, `nohost`, `notfqdn` and `abuse` are permanent errors and
 pause updates for that hostname for an hour. `911` and `dnserr` are retried
 with exponential backoff.
+
+## Logging
+
+Logs go to stdout as JSON (`DDNS_LOG_FORMAT=text` for plain text). At the
+default `info` level you get:
+
+- the effective configuration at startup (never credentials), and per
+  hostname whether its DNS record already matches the public IP;
+- every public IP change and every DNS update, with the provider's response
+  (e.g. `good 203.0.113.7`);
+- **failures**: public IP detection (`ERROR`), a single IP source failing while
+  the others still work (`WARN`), DNS lookups (`WARN`), split-horizon answers
+  (`WARN`) and updates (`ERROR`, every attempt, with the attempt number and
+  when it is retried; rejected credentials or hostnames get a hint). A failure
+  is logged when it starts and when its message changes; while it persists it
+  is repeated every 15 minutes (`"state":"ongoing"`) instead of every check;
+- **recoveries**: when any of these succeed again, with how long the problem
+  lasted and how many attempts failed (`"after":"17m0s","failed_attempts":3`);
+- a **heartbeat** every `DDNS_HEARTBEAT_INTERVAL` (default 1h) summarizing the
+  public IPs and how many hostnames are in sync, at `WARN` while degraded.
+
+`DDNS_LOG_LEVEL=debug` adds per-check details.
 
 ## Status page and endpoints
 

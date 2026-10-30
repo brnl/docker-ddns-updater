@@ -56,15 +56,15 @@ func (p *Provider) Name() string { return "mijnhost" }
 
 // Update sets the record(s) for req.Hostname. Only the address families that
 // are set in req are sent.
-func (p *Provider) Update(ctx context.Context, req provider.Request) error {
+func (p *Provider) Update(ctx context.Context, req provider.Request) (string, error) {
 	if !req.IPv4.IsValid() && !req.IPv6.IsValid() {
 		// Omitting both would make mijn.host use the request's source address,
 		// which is never what we want here.
-		return errors.New("no address to update")
+		return "", errors.New("no address to update")
 	}
 	u, err := url.Parse(p.endpoint)
 	if err != nil {
-		return fmt.Errorf("invalid endpoint: %w", err)
+		return "", fmt.Errorf("invalid endpoint: %w", err)
 	}
 	q := url.Values{}
 	q.Set("hostname", req.Hostname)
@@ -78,7 +78,7 @@ func (p *Provider) Update(ctx context.Context, req provider.Request) error {
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
 	if err != nil {
-		return err
+		return "", err
 	}
 	// Credentials go in the Authorization header rather than the URL, so they
 	// never end up in logged URLs or error messages.
@@ -87,14 +87,17 @@ func (p *Provider) Update(ctx context.Context, req provider.Request) error {
 
 	resp, err := p.client.Do(httpReq)
 	if err != nil {
-		return fmt.Errorf("request failed: %w", redactURLError(err))
+		return "", fmt.Errorf("request failed: %w", redactURLError(err))
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBodySize))
 	if err != nil {
-		return fmt.Errorf("reading response: %w", err)
+		return "", fmt.Errorf("reading response: %w", err)
 	}
-	return interpret(resp.StatusCode, string(body))
+	if err := interpret(resp.StatusCode, string(body)); err != nil {
+		return "", err
+	}
+	return truncate(strings.TrimSpace(string(body)), 100), nil
 }
 
 // interpret maps a dyndns2 style response to an error.

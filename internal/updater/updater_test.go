@@ -1,12 +1,14 @@
 package updater
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
-	"io"
 	"log/slog"
 	"net"
 	"net/netip"
+	"strings"
 	"testing"
 	"time"
 
@@ -31,18 +33,25 @@ type fakeProvider struct {
 }
 
 func (p *fakeProvider) Name() string { return "fake" }
-func (p *fakeProvider) Update(_ context.Context, r provider.Request) error {
+func (p *fakeProvider) Update(_ context.Context, r provider.Request) (string, error) {
 	p.reqs = append(p.reqs, r)
-	return p.err
+	if p.err != nil {
+		return "", p.err
+	}
+	return "good", nil
 }
 
 type fakeResolver struct {
 	records map[string][]netip.Addr // network -> addrs
 	calls   int
+	err     error
 }
 
 func (r *fakeResolver) LookupNetIP(_ context.Context, network, host string) ([]netip.Addr, error) {
 	r.calls++
+	if r.err != nil {
+		return nil, r.err
+	}
 	if a := r.records[network]; len(a) > 0 {
 		return a, nil
 	}
@@ -54,7 +63,6 @@ type clock struct{ t time.Time }
 func (c *clock) now() time.Time      { return c.t }
 func (c *clock) add(d time.Duration) { c.t = c.t.Add(d) }
 func ip(s string) netip.Addr         { return netip.MustParseAddr(s) }
-func quiet() *slog.Logger            { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 
 type fixture struct {
 	v4, v6 *fakeDetector
@@ -62,6 +70,42 @@ type fixture struct {
 	res    *fakeResolver
 	clk    *clock
 	u      *Updater
+	logs   *bytes.Buffer
+}
+
+type logLine struct {
+	Level string `json:"level"`
+	Msg   string `json:"msg"`
+	State string `json:"state"`
+	After string `json:"after"`
+	N     int    `json:"failed_attempts"`
+}
+
+// lines returns the log lines written since the last call.
+func (f *fixture) lines(t *testing.T) []logLine {
+	t.Helper()
+	var out []logLine
+	for _, l := range strings.Split(strings.TrimSpace(f.logs.String()), "\n") {
+		if l == "" {
+			continue
+		}
+		var ll logLine
+		if err := json.Unmarshal([]byte(l), &ll); err != nil {
+			t.Fatalf("bad log line %q: %v", l, err)
+		}
+		out = append(out, ll)
+	}
+	f.logs.Reset()
+	return out
+}
+
+func find(lines []logLine, msgPrefix string) *logLine {
+	for i := range lines {
+		if strings.HasPrefix(lines[i].Msg, msgPrefix) {
+			return &lines[i]
+		}
+	}
+	return nil
 }
 
 func newFixture(dnsRecheck time.Duration, detectors ...ipdetect.Family) *fixture {
@@ -71,6 +115,7 @@ func newFixture(dnsRecheck time.Duration, detectors ...ipdetect.Family) *fixture
 		prov: &fakeProvider{},
 		res:  &fakeResolver{records: map[string][]netip.Addr{}},
 		clk:  &clock{t: time.Unix(1_700_000_000, 0)},
+		logs: &bytes.Buffer{},
 	}
 	var ds []Detector
 	for _, fam := range detectors {
@@ -87,8 +132,9 @@ func newFixture(dnsRecheck time.Duration, detectors ...ipdetect.Family) *fixture
 		Interval:           10 * time.Second,
 		DNSRecheckInterval: dnsRecheck,
 		Resolver:           f.res,
-		Logger:             quiet(),
+		Logger:             slog.New(slog.NewJSONHandler(f.logs, &slog.HandlerOptions{Level: slog.LevelInfo})),
 		Now:                f.clk.now,
+		Heartbeat:          time.Hour,
 	})
 	return f
 }
@@ -316,5 +362,112 @@ func TestCounters(t *testing.T) {
 	}
 	if h.UpdatesOK != 1 || h.UpdatesFail != 1 {
 		t.Errorf("host = %+v", h)
+	}
+}
+
+func TestLogsDetectionFailureReminderAndRecovery(t *testing.T) {
+	f := newFixture(time.Minute, ipdetect.IPv4)
+	ctx := context.Background()
+	f.u.Check(ctx)
+	f.lines(t)
+
+	f.v4.err = errors.New("all sources down")
+	f.clk.add(time.Minute)
+	f.u.Check(ctx)
+	if l := find(f.lines(t), "public IP detection failed"); l == nil || l.Level != "ERROR" || l.State != "started" {
+		t.Fatalf("failure not logged as started error: %+v", l)
+	}
+	f.clk.add(time.Minute)
+	f.u.Check(ctx)
+	if l := find(f.lines(t), "public IP detection failed"); l != nil {
+		t.Fatal("unchanged failure logged again immediately")
+	}
+	f.clk.add(15 * time.Minute)
+	f.u.Check(ctx)
+	if l := find(f.lines(t), "public IP detection failed"); l == nil || l.State != "ongoing" {
+		t.Fatalf("no reminder for ongoing failure: %+v", l)
+	}
+	f.v4.err = nil
+	f.clk.add(time.Minute)
+	f.u.Check(ctx)
+	if l := find(f.lines(t), "public IP detection recovered"); l == nil || l.N != 3 || l.After != "17m0s" {
+		t.Fatalf("recovery not logged with duration and attempts: %+v", l)
+	}
+}
+
+func TestLogsUpdateFailureAndRecovery(t *testing.T) {
+	f := newFixture(time.Minute, ipdetect.IPv4)
+	ctx := context.Background()
+	f.prov.err = errors.New("timeout")
+	f.u.Check(ctx)
+	if l := find(f.lines(t), "DNS update failed"); l == nil || l.Level != "ERROR" {
+		t.Fatalf("update failure not logged: %+v", l)
+	}
+	f.prov.err = nil
+	f.clk.add(10 * time.Second)
+	f.u.Check(ctx)
+	if l := find(f.lines(t), "DNS update recovered"); l == nil || l.N != 1 || l.After != "10s" {
+		t.Fatalf("update recovery not logged: %+v", l)
+	}
+
+	f.prov.err = &provider.PermanentError{Err: errors.New("badauth")}
+	f.v4.addr = ip("203.0.113.9")
+	f.clk.add(10 * time.Second)
+	f.u.Check(ctx)
+	if l := find(f.lines(t), "DNS update rejected by provider"); l == nil {
+		t.Fatal("permanent failure not logged with a hint")
+	}
+}
+
+func TestLogsInitialState(t *testing.T) {
+	f := newFixture(time.Minute, ipdetect.IPv4)
+	f.res.records["ip4"] = []netip.Addr{ip("203.0.113.1")}
+	f.u.Check(context.Background())
+	if l := find(f.lines(t), "DNS record is up to date"); l == nil {
+		t.Fatal("initial in-sync state not logged")
+	}
+
+	g := newFixture(time.Minute, ipdetect.IPv4)
+	g.u.Check(context.Background())
+	lines := g.lines(t)
+	if find(lines, "DNS record differs from the public IP") == nil || find(lines, "DNS record updated") == nil {
+		t.Fatalf("initial out-of-sync state not logged: %+v", lines)
+	}
+}
+
+func TestLogsDNSLookupFailure(t *testing.T) {
+	f := newFixture(time.Minute, ipdetect.IPv4)
+	ctx := context.Background()
+	f.res.err = errors.New("i/o timeout")
+	f.u.Check(ctx)
+	if l := find(f.lines(t), "DNS lookup failed"); l == nil || l.Level != "WARN" {
+		t.Fatalf("lookup failure not logged as warning: %+v", l)
+	}
+	f.res.err = nil
+	f.clk.add(61 * time.Second)
+	f.u.Check(ctx)
+	if l := find(f.lines(t), "DNS lookup recovered"); l == nil {
+		t.Fatal("lookup recovery not logged")
+	}
+}
+
+func TestHeartbeat(t *testing.T) {
+	f := newFixture(time.Minute, ipdetect.IPv4)
+	ctx := context.Background()
+	f.u.Check(ctx)
+	if find(f.lines(t), "status:") != nil {
+		t.Fatal("heartbeat before interval elapsed")
+	}
+	f.clk.add(time.Hour)
+	f.u.Check(ctx)
+	if l := find(f.lines(t), "status: all hostnames up to date"); l == nil || l.Level != "INFO" {
+		t.Fatalf("healthy heartbeat missing: %+v", l)
+	}
+	f.prov.err = errors.New("boom")
+	f.v4.addr = ip("203.0.113.2")
+	f.clk.add(time.Hour)
+	f.u.Check(ctx)
+	if l := find(f.lines(t), "status: degraded"); l == nil || l.Level != "WARN" {
+		t.Fatalf("degraded heartbeat missing: %+v", l)
 	}
 }
