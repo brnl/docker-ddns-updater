@@ -33,11 +33,12 @@
     <h2>Hostnames</h2>
     <div class="table">
       <table>
-        <thead><tr><th>Hostname</th>{{if .Info.IPv4Enabled}}<th>IPv4 record</th>{{end}}{{if .Info.IPv6Enabled}}<th>IPv6 record</th>{{end}}<th>Status</th><th>Last update</th></tr></thead>
+        <thead><tr><th>Hostname</th>{{if gt (len .Info.Accounts) 1}}<th>Account</th>{{end}}{{if .Info.IPv4Enabled}}<th>IPv4 record</th>{{end}}{{if .Info.IPv6Enabled}}<th>IPv6 record</th>{{end}}<th>Status</th><th>Last update</th></tr></thead>
         <tbody>
           {{range .Hosts}}
           <tr>
             <td class="mono host">{{.Hostname}}</td>
+            {{if gt (len $.Info.Accounts) 1}}<td data-label="Account">{{.Account}} <span class="muted">({{.Provider}})</span></td>{{end}}
             {{if $.Info.IPv4Enabled}}<td class="mono" data-label="IPv4 record">{{or .IPv4 "—"}}</td>{{end}}
             {{if $.Info.IPv6Enabled}}<td class="mono" data-label="IPv6 record">{{or .IPv6 "—"}}</td>{{end}}
             <td data-label="Status">
@@ -56,7 +57,8 @@
   <section>
     <h2>Configuration</h2>
     <dl>
-      <dt>Provider</dt><dd>{{.Info.Provider}}</dd>
+      {{range .Info.Accounts}}<dt>Account {{.Name}}</dt><dd>{{.Provider}} · {{.Hostnames}} hostname{{if ne .Hostnames 1}}s{{end}}</dd>
+      {{end}}
       <dt>Check interval</dt><dd>every {{duration .Info.Interval}}</dd>
       <dt>DNS re-check</dt><dd>{{if .Info.DNSRecheckInterval}}every {{duration .Info.DNSRecheckInterval}}{{else}}at startup only{{end}}</dd>
       {{if .Info.IPv4Enabled}}<dt>IPv4 sources</dt><dd class="mono">{{join .Info.IPv4Sources ", "}}</dd>{{end}}

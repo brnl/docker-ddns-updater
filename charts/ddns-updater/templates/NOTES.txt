@@ -1,6 +1,12 @@
-ddns-updater is keeping these hostnames up to date via {{ .Values.provider }}:
+ddns-updater is keeping these hostnames up to date:
 {{- range .Values.hostnames }}
-  - {{ . }}
+  - {{ . }} (account default, {{ $.Values.provider }})
+{{- end }}
+{{- range .Values.accounts }}
+{{- $account := . }}
+{{- range .hostnames }}
+  - {{ . }} (account {{ $account.name }}, {{ $account.provider | default "mijnhost" }})
+{{- end }}
 {{- end }}
 
 Follow the logs:

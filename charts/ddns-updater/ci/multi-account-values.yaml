@@ -1,0 +1,32 @@
+# Default account plus three extra accounts, one per credential source.
+hostnames:
+  - home.example.com
+credentials:
+  existingSecret: ddns-default
+externalSecret:
+  secretStoreRef:
+    name: store
+accounts:
+  - name: noip-home
+    provider: noip
+    hostnames:
+      - home.ddns.net
+    existingSecret: noip-home
+  - name: work
+    hostnames:
+      - vpn.example.nl
+      - mail.example.nl
+    externalSecret:
+      enabled: true
+      username:
+        key: ddns/work
+        property: username
+      password:
+        key: ddns/work
+        property: password
+  - name: noip-2
+    provider: noip
+    hostnames:
+      - other.ddns.net
+    username: me@example.com
+    password: s3cret

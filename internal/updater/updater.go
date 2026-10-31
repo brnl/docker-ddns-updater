@@ -40,11 +40,22 @@ type HealthReporter interface {
 	Tick(ok bool)
 }
 
+// Target is one account: a provider (with its credentials) and the
+// hostnames it updates.
+type Target struct {
+	Account   string
+	Provider  provider.Provider
+	Hostnames []string
+}
+
 // Options configures an Updater.
 type Options struct {
+	// Targets lists the accounts. For a single account, Provider and
+	// Hostnames may be set instead (account "default").
+	Targets   []Target
 	Provider  provider.Provider
-	Detectors []Detector
 	Hostnames []string
+	Detectors []Detector
 	Interval  time.Duration
 	// DNSRecheckInterval controls how often the published DNS records are
 	// compared with the detected address. Records are always looked up at
@@ -76,6 +87,8 @@ type hostState struct {
 	// stopped is set when the provider requires that no further updates
 	// are sent until the configuration is fixed (and the updater restarted).
 	stopped bool
+	account string
+	prov    provider.Provider
 	// failure tracking for logging (start, reminders, recovery)
 	updateErr condlog.Tracker
 	lookupErr map[ipdetect.Family]*condlog.Tracker
@@ -118,6 +131,8 @@ type HostStatus struct {
 	LastErrorAt time.Time `json:"last_error_at,omitzero"`
 	NextAttempt time.Time `json:"next_attempt,omitzero"`
 	Failures    int       `json:"failures"`
+	Account     string    `json:"account"`
+	Provider    string    `json:"provider"`
 	DNSWarning  string    `json:"dns_warning,omitempty"`
 	Stopped     bool      `json:"updates_stopped,omitempty"`
 	UpdatesOK   uint64    `json:"updates_succeeded"`
@@ -150,21 +165,18 @@ func New(opts Options) *Updater {
 	if opts.Resolver == nil {
 		opts.Resolver = net.DefaultResolver
 	}
-	hosts := make(map[string]*hostState, len(opts.Hostnames))
-	for _, h := range opts.Hostnames {
-		st := &hostState{
-			known:       map[ipdetect.Family]netip.Addr{},
-			dnsWarnings: map[ipdetect.Family]string{},
-			lookupErr:   map[ipdetect.Family]*condlog.Tracker{},
-			// Every failed update is logged already (they are spaced out by
-			// the backoff), so no reminders are needed.
-			updateErr: condlog.Tracker{Reminder: -1},
-		}
-		for _, d := range opts.Detectors {
-			st.lookupErr[d.Family()] = &condlog.Tracker{}
-		}
-		hosts[h] = st
+	if len(opts.Targets) == 0 {
+		opts.Targets = []Target{{Account: "default", Provider: opts.Provider, Hostnames: opts.Hostnames}}
 	}
+	var order []string
+	hosts := map[string]*hostState{}
+	for _, t := range opts.Targets {
+		for _, h := range t.Hostnames {
+			order = append(order, h)
+			hosts[h] = newHostState(t, opts.Detectors)
+		}
+	}
+	opts.Hostnames = order
 	families := map[ipdetect.Family]*familyState{}
 	detectErrs := map[ipdetect.Family]*condlog.Tracker{}
 	for _, d := range opts.Detectors {
@@ -184,6 +196,23 @@ func New(opts Options) *Updater {
 	}
 	u.publish()
 	return u
+}
+
+func newHostState(t Target, detectors []Detector) *hostState {
+	st := &hostState{
+		account:     t.Account,
+		prov:        t.Provider,
+		known:       map[ipdetect.Family]netip.Addr{},
+		dnsWarnings: map[ipdetect.Family]string{},
+		lookupErr:   map[ipdetect.Family]*condlog.Tracker{},
+		// Every failed update is logged already (they are spaced out by the
+		// backoff), so no reminders are needed.
+		updateErr: condlog.Tracker{Reminder: -1},
+	}
+	for _, d := range detectors {
+		st.lookupErr[d.Family()] = &condlog.Tracker{}
+	}
+	return st
 }
 
 // Snapshot returns the state as of the last completed check cycle. It is safe
@@ -216,6 +245,8 @@ func (u *Updater) publish() {
 		st := u.hosts[h]
 		hs := HostStatus{
 			Hostname:    h,
+			Account:     st.account,
+			Provider:    st.prov.Name(),
 			InSync:      st.inSync,
 			LastUpdate:  st.lastUpdate,
 			LastError:   st.lastError,
@@ -438,7 +469,7 @@ func (u *Updater) syncHost(ctx context.Context, hostname string, detected map[ip
 		IPv4:     u.addrForRequest(detected, ipdetect.IPv4),
 		IPv6:     u.addrForRequest(detected, ipdetect.IPv6),
 	}
-	attrs := append([]any{"hostname", hostname, "provider", u.opts.Provider.Name()}, changed...)
+	attrs := append([]any{"hostname", hostname, "account", st.account, "provider", st.prov.Name()}, changed...)
 	if req.IPv4.IsValid() {
 		attrs = append(attrs, "ipv4", req.IPv4.String())
 	}
@@ -448,7 +479,7 @@ func (u *Updater) syncHost(ctx context.Context, hostname string, detected map[ip
 
 	if u.opts.DryRun {
 		u.log.Info("dry run: would update DNS record", attrs...)
-	} else if resp, err := u.opts.Provider.Update(ctx, req); err != nil {
+	} else if resp, err := st.prov.Update(ctx, req); err != nil {
 		if ctx.Err() != nil {
 			return false
 		}
@@ -462,15 +493,18 @@ func (u *Updater) syncHost(ctx context.Context, hostname string, detected map[ip
 
 		if provider.StopsAllUpdates(err) {
 			// Bad credentials or a blocked client: the provider requires the
-			// client to stop entirely until the user fixes the problem.
+			// client to stop using this account until the user fixes it.
 			for _, other := range u.hosts {
+				if other.account != st.account {
+					continue
+				}
 				other.stopped = true
 				other.nextAttempt = time.Time{}
 				if other.lastError == "" {
 					other.lastError, other.lastErrorAt = err.Error(), now
 				}
 			}
-			u.log.Error("DNS update rejected by provider; updates for ALL hostnames are stopped until the configuration is fixed and the updater is restarted", attrs...)
+			u.log.Error("DNS update rejected by provider; updates for ALL hostnames of this account are stopped until the configuration is fixed and the updater is restarted", attrs...)
 			return false
 		}
 		if provider.StopsUpdates(err) {
@@ -603,7 +637,7 @@ func (u *Updater) lookupDNS(ctx context.Context, hostname string, st *hostState,
 // logInitialState logs, once per hostname at startup, what DNS currently
 // publishes compared to the detected public address.
 func (u *Updater) logInitialState(hostname string, st *hostState, detected map[ipdetect.Family]netip.Addr) {
-	attrs := []any{"hostname", hostname}
+	attrs := []any{"hostname", hostname, "account", st.account}
 	inSync := true
 	for _, fam := range []ipdetect.Family{ipdetect.IPv4, ipdetect.IPv6} {
 		cur, ok := detected[fam]

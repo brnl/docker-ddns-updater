@@ -16,7 +16,12 @@ func serveMetrics(w http.ResponseWriter, opts Options) {
 	var m metricsWriter
 
 	m.family("ddns_updater_info", "gauge", "Build and configuration information.")
-	m.sample("ddns_updater_info", 1, "version", opts.Info.Version, "provider", opts.Info.Provider)
+	m.sample("ddns_updater_info", 1, "version", opts.Info.Version)
+
+	m.family("ddns_updater_account_info", "gauge", "Configured accounts and their provider.")
+	for _, a := range opts.Info.Accounts {
+		m.sample("ddns_updater_account_info", 1, "account", a.Name, "provider", a.Provider)
+	}
 
 	m.family("ddns_updater_start_time_seconds", "gauge", "Start time of the process since unix epoch in seconds.")
 	m.sample("ddns_updater_start_time_seconds", unix(opts.Info.Started))
@@ -43,28 +48,28 @@ func serveMetrics(w http.ResponseWriter, opts Options) {
 
 	m.family("ddns_updater_host_in_sync", "gauge", "Whether the hostname's DNS record matches the detected public IP.")
 	for _, h := range snap.Hosts {
-		m.sample("ddns_updater_host_in_sync", boolValue(h.InSync), "hostname", h.Hostname)
+		m.sample("ddns_updater_host_in_sync", boolValue(h.InSync), "hostname", h.Hostname, "account", h.Account)
 	}
 	m.family("ddns_updater_host_consecutive_failures", "gauge", "Consecutive failed updates for the hostname.")
 	for _, h := range snap.Hosts {
-		m.sample("ddns_updater_host_consecutive_failures", float64(h.Failures), "hostname", h.Hostname)
+		m.sample("ddns_updater_host_consecutive_failures", float64(h.Failures), "hostname", h.Hostname, "account", h.Account)
 	}
 	m.family("ddns_updater_host_dns_warning", "gauge", "Whether DNS lookups for the hostname returned only non-public addresses (split-horizon DNS).")
 	for _, h := range snap.Hosts {
-		m.sample("ddns_updater_host_dns_warning", boolValue(h.DNSWarning != ""), "hostname", h.Hostname)
+		m.sample("ddns_updater_host_dns_warning", boolValue(h.DNSWarning != ""), "hostname", h.Hostname, "account", h.Account)
 	}
 	m.family("ddns_updater_host_updates_stopped", "gauge", "Whether updates for the hostname are stopped after a provider rejection (until restart).")
 	for _, h := range snap.Hosts {
-		m.sample("ddns_updater_host_updates_stopped", boolValue(h.Stopped), "hostname", h.Hostname)
+		m.sample("ddns_updater_host_updates_stopped", boolValue(h.Stopped), "hostname", h.Hostname, "account", h.Account)
 	}
 	m.family("ddns_updater_updates_total", "counter", "Provider update requests by result.")
 	for _, h := range snap.Hosts {
-		m.sample("ddns_updater_updates_total", float64(h.UpdatesOK), "hostname", h.Hostname, "result", "success")
-		m.sample("ddns_updater_updates_total", float64(h.UpdatesFail), "hostname", h.Hostname, "result", "failure")
+		m.sample("ddns_updater_updates_total", float64(h.UpdatesOK), "hostname", h.Hostname, "account", h.Account, "result", "success")
+		m.sample("ddns_updater_updates_total", float64(h.UpdatesFail), "hostname", h.Hostname, "account", h.Account, "result", "failure")
 	}
 	m.family("ddns_updater_last_update_timestamp_seconds", "gauge", "Time of the last successful update of the hostname (0 if none).")
 	for _, h := range snap.Hosts {
-		m.sample("ddns_updater_last_update_timestamp_seconds", unix(h.LastUpdate), "hostname", h.Hostname)
+		m.sample("ddns_updater_last_update_timestamp_seconds", unix(h.LastUpdate), "hostname", h.Hostname, "account", h.Account)
 	}
 
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")

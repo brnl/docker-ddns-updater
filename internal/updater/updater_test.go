@@ -586,3 +586,38 @@ func TestFallbackNeverUsesDNSAnswer(t *testing.T) {
 		t.Fatalf("request used %s for IPv6, want the last detected 2001:db8::1", r.IPv6)
 	}
 }
+
+func TestMultipleAccounts(t *testing.T) {
+	f := newFixture(time.Minute, ipdetect.IPv4)
+	home, work := &fakeProvider{}, &fakeProvider{}
+	f.u = New(Options{
+		Targets: []Target{
+			{Account: "home", Provider: home, Hostnames: []string{"a.ddns.net"}},
+			{Account: "work", Provider: work, Hostnames: []string{"b.example.nl", "c.example.nl"}},
+		},
+		Detectors: []Detector{f.v4}, Interval: 10 * time.Second, DNSRecheckInterval: time.Minute,
+		Resolver: f.res, Logger: quiet(), Now: f.clk.now,
+	})
+	ctx := context.Background()
+	// Bad credentials on "home" stop only home's hostnames.
+	home.err = &provider.PermanentError{Err: errors.New("badauth"), Stop: true, Account: true}
+	f.u.Check(ctx)
+	if len(home.reqs) != 1 || len(work.reqs) != 2 {
+		t.Fatalf("requests: home=%d work=%d", len(home.reqs), len(work.reqs))
+	}
+	f.v4.addr = ip("203.0.113.2")
+	f.clk.add(time.Hour)
+	f.u.Check(ctx)
+	if len(home.reqs) != 1 || len(work.reqs) != 4 {
+		t.Fatalf("after IP change: home=%d work=%d (home must stay stopped, work must update)", len(home.reqs), len(work.reqs))
+	}
+	for _, h := range f.u.Snapshot().Hosts {
+		wantStopped := h.Account == "home"
+		if h.Stopped != wantStopped {
+			t.Errorf("%s (%s): stopped=%v", h.Hostname, h.Account, h.Stopped)
+		}
+		if h.Provider != "fake" {
+			t.Errorf("%s: provider=%q", h.Hostname, h.Provider)
+		}
+	}
+}
