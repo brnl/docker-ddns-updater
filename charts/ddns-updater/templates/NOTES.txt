@@ -5,7 +5,7 @@ ddns-updater is keeping these hostnames up to date:
 {{- range .Values.accounts }}
 {{- $account := . }}
 {{- range .hostnames }}
-  - {{ . }} (account {{ $account.name }}, {{ $account.provider | default "mijnhost" }})
+  - {{ . }} (account {{ $account.name }}, {{ $account.provider }})
 {{- end }}
 {{- end }}
 

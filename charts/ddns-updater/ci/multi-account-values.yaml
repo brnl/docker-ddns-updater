@@ -13,6 +13,7 @@ accounts:
       - home.ddns.net
     existingSecret: noip-home
   - name: work
+    provider: mijnhost
     hostnames:
       - vpn.example.nl
       - mail.example.nl

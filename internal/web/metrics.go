@@ -16,7 +16,9 @@ func serveMetrics(w http.ResponseWriter, opts Options) {
 	var m metricsWriter
 
 	m.family("ddns_updater_info", "gauge", "Build and configuration information.")
-	m.sample("ddns_updater_info", 1, "version", opts.Info.Version)
+	// provider lists all providers in use (comma-separated); kept for
+	// compatibility, ddns_updater_account_info has the per-account detail.
+	m.sample("ddns_updater_info", 1, "version", opts.Info.Version, "provider", strings.ReplaceAll(opts.Info.Provider, " ", ""))
 
 	m.family("ddns_updater_account_info", "gauge", "Configured accounts and their provider.")
 	for _, a := range opts.Info.Accounts {

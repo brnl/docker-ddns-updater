@@ -166,6 +166,7 @@ func TestMultipleAccounts(t *testing.T) {
 		"DDNS_ACCOUNT_HOME_HOSTNAMES":       "a.ddns.net",
 		"DDNS_ACCOUNT_HOME_USERNAME":        "me@example.com",
 		"DDNS_ACCOUNT_HOME_PASSWORD":        "home-secret",
+		"DDNS_ACCOUNT_WORK_2_PROVIDER":      "mijnhost",
 		"DDNS_ACCOUNT_WORK_2_HOSTNAMES":     "b.example.nl,c.example.nl",
 		"DDNS_ACCOUNT_WORK_2_USERNAME":      "work",
 		"DDNS_ACCOUNT_WORK_2_PASSWORD_FILE": pw,
@@ -223,6 +224,7 @@ func TestLegacyEndpointOnlyForMijnhost(t *testing.T) {
 func TestInvalidAccounts(t *testing.T) {
 	acct := func(extra map[string]string) map[string]string {
 		env := map[string]string{
+			"DDNS_ACCOUNT_A_PROVIDER":  "noip",
 			"DDNS_ACCOUNTS":            "a",
 			"DDNS_ACCOUNT_A_HOSTNAMES": "a.example.com",
 			"DDNS_ACCOUNT_A_USERNAME":  "u",
@@ -246,7 +248,7 @@ func TestInvalidAccounts(t *testing.T) {
 		"endpoint with creds": {"DDNS_ACCOUNT_A_ENDPOINT": "https://u:p@example.com/nic/update"},
 		"endpoint not http":   {"DDNS_ACCOUNT_A_ENDPOINT": "ftp://example.com"},
 		"hostname in two accounts": {
-			"DDNS_ACCOUNTS": "a,b", "DDNS_ACCOUNT_B_HOSTNAMES": "A.example.com.",
+			"DDNS_ACCOUNTS": "a,b", "DDNS_ACCOUNT_B_PROVIDER": "noip", "DDNS_ACCOUNT_B_HOSTNAMES": "A.example.com.",
 			"DDNS_ACCOUNT_B_USERNAME": "u", "DDNS_ACCOUNT_B_PASSWORD": "p",
 		},
 	}
@@ -262,5 +264,35 @@ func TestInvalidAccounts(t *testing.T) {
 				t.Error("expected error")
 			}
 		})
+	}
+}
+
+func TestEmptyDefaultHostnamesWithAccounts(t *testing.T) {
+	env := map[string]string{
+		"DDNS_HOSTNAMES":           "",
+		"DDNS_ACCOUNTS":            "a",
+		"DDNS_ACCOUNT_A_PROVIDER":  "noip",
+		"DDNS_ACCOUNT_A_HOSTNAMES": "a.ddns.net",
+		"DDNS_ACCOUNT_A_USERNAME":  "u",
+		"DDNS_ACCOUNT_A_PASSWORD":  "p",
+	}
+	c, err := Load(lookup(env))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c.Accounts) != 1 || c.Accounts[0].Name != "a" {
+		t.Fatalf("accounts = %+v", c.Accounts)
+	}
+}
+
+func TestDuplicateHostnameWithinAccountIsDropped(t *testing.T) {
+	env := base()
+	env["DDNS_HOSTNAMES"] = "home.example.com, Home.Example.com., other.example.com"
+	c, err := Load(lookup(env))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(c.Hostnames(), ","); got != "home.example.com,other.example.com" {
+		t.Fatalf("hostnames = %q", got)
 	}
 }

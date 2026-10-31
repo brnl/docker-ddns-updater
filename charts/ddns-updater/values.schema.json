@@ -27,6 +27,7 @@
         "additionalProperties": false,
         "required": [
           "name",
+          "provider",
           "hostnames"
         ],
         "properties": {

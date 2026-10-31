@@ -55,6 +55,19 @@ jobs:
             echo "::error::values.schema.json accepted an unknown key"
             exit 1
           fi
+      - name: Invalid accounts are rejected
+        run: |
+          chart=charts/ddns-updater
+          a='--set accounts[0].name=a --set accounts[0].provider=noip --set accounts[0].hostnames[0]=a.ddns.net'
+          fail() { if helm template test "$chart" "$@" >/dev/null 2>&1; then echo "::error::accepted: $*"; exit 1; fi; }
+          fail                                                         # no hostnames, no accounts
+          fail $a                                                      # no credential source
+          fail $a --set accounts[0].existingSecret=x --set accounts[0].username=u --set accounts[0].password=p
+          fail $a --set accounts[0].username=u                         # password missing
+          fail $a --set accounts[0].existingSecret=x --set accounts[1].name=a --set accounts[1].provider=noip --set accounts[1].hostnames[0]=b.ddns.net --set accounts[1].existingSecret=y
+          fail $a --set accounts[0].name=default --set accounts[0].existingSecret=x
+          fail $a --set accounts[0].externalSecret.enabled=true --set accounts[0].externalSecret.username.key=k --set accounts[0].externalSecret.password.key=k
+          fail --set accounts[0].name=a --set accounts[0].hostnames[0]=a.ddns.net --set accounts[0].existingSecret=x   # provider missing
       - name: kubeconform
         run: |
           for f in charts/ddns-updater/ci/*-values.yaml; do

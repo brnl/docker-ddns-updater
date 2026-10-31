@@ -79,7 +79,7 @@ spec:
             {{- range .Values.accounts }}
             {{- $prefix := include "ddns-updater.accountEnvPrefix" . }}
             - name: {{ $prefix }}PROVIDER
-              value: {{ .provider | default "mijnhost" | quote }}
+              value: {{ .provider | quote }}
             - name: {{ $prefix }}HOSTNAMES
               value: {{ join "," .hostnames | quote }}
             - name: {{ $prefix }}USERNAME_FILE

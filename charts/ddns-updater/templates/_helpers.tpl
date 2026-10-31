@@ -118,11 +118,17 @@ spec:
 {{- fail "configure hostnames (the default account) and/or accounts" }}
 {{- end }}
 {{- $names := dict }}
+{{- $secretNames := dict (include "ddns-updater.secretName" .) "default" }}
 {{- range .Values.accounts }}
 {{- if or (eq .name "default") (hasKey $names .name) }}
 {{- fail (printf "accounts: account name %q must be unique and not \"default\"" .name) }}
 {{- end }}
 {{- $_ := set $names .name true }}
+{{- $secretName := include "ddns-updater.accountSecretName" (dict "root" $ "account" .) }}
+{{- if and (hasKey $secretNames $secretName) (not .existingSecret) }}
+{{- fail (printf "accounts[%s]: Secret name %q clashes with account %q (names are truncated to 63 characters); use shorter account names or fullnameOverride" .name $secretName (get $secretNames $secretName)) }}
+{{- end }}
+{{- $_ := set $secretNames $secretName .name }}
 {{- $es := and .externalSecret .externalSecret.enabled }}
 {{- $sources := 0 }}
 {{- if .existingSecret }}{{ $sources = add1 $sources }}{{ end }}

@@ -126,7 +126,7 @@ func TestMetrics(t *testing.T) {
 	}
 	body := rec.Body.String()
 	for _, want := range []string{
-		`ddns_updater_info{version="1.2.3"} 1`,
+		`ddns_updater_info{provider="mijnhost",version="1.2.3"} 1`,
 		`ddns_updater_account_info{account="default",provider="mijnhost"} 1`,
 		`ddns_updater_ready 1`,
 		`ddns_updater_ip_detection_success{family="ipv4"} 1`,

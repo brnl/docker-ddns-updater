@@ -52,7 +52,7 @@ accounts: []
 #    # usernameKey: username
 #    # passwordKey: password
 #  - name: work
-#    provider: mijnhost
+#    provider: mijnhost             # required for every account
 #    hostnames:
 #      - vpn.example.nl
 #    externalSecret:

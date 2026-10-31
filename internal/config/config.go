@@ -188,16 +188,23 @@ func accountPrefix(name string) string {
 // DDNS_ACCOUNTS are listed) and every account named in DDNS_ACCOUNTS.
 func loadAccounts(e *env) []Account {
 	names := e.list("DDNS_ACCOUNTS", nil)
-	if _, legacy := e.lookup("DDNS_HOSTNAMES"); legacy || len(names) == 0 {
+	if e.str("DDNS_HOSTNAMES", "") != "" || len(names) == 0 {
 		names = append([]string{DefaultAccount}, names...)
 	}
 	accounts := make([]Account, 0, len(names))
 	for _, name := range names {
 		name = strings.ToLower(name)
 		p := accountPrefix(name)
+		// Only the default account falls back to mijnhost (its historic
+		// default); other accounts must name their provider, so credentials
+		// never go to a provider by accident.
+		defaultProvider := ""
+		if name == DefaultAccount {
+			defaultProvider = "mijnhost"
+		}
 		a := Account{
 			Name:      name,
-			Provider:  strings.ToLower(e.str(p+"PROVIDER", "mijnhost")),
+			Provider:  strings.ToLower(e.str(p+"PROVIDER", defaultProvider)),
 			Hostnames: e.list(p+"HOSTNAMES", nil),
 			Username:  e.secret(p + "USERNAME"),
 			Password:  e.secret(p + "PASSWORD"),
@@ -219,7 +226,8 @@ func (c *Config) validateAccounts() []error {
 	}
 	names := map[string]bool{}
 	owner := map[string]string{} // hostname -> account
-	for _, a := range c.Accounts {
+	for i := range c.Accounts {
+		a := &c.Accounts[i]
 		p := accountPrefix(a.Name)
 		if !validAccountName(a.Name) {
 			errs = append(errs, fmt.Errorf("DDNS_ACCOUNTS: invalid account name %q (use a-z, 0-9 and -, max 32 characters)", a.Name))
@@ -230,23 +238,31 @@ func (c *Config) validateAccounts() []error {
 			continue
 		}
 		names[a.Name] = true
-		if !slices.Contains(Providers, a.Provider) {
+		if a.Provider == "" {
+			errs = append(errs, fmt.Errorf("%sPROVIDER is required (supported: %s)", p, strings.Join(Providers, ", ")))
+		} else if !slices.Contains(Providers, a.Provider) {
 			errs = append(errs, fmt.Errorf("%sPROVIDER: unsupported provider %q (supported: %s)", p, a.Provider, strings.Join(Providers, ", ")))
 		}
 		if len(a.Hostnames) == 0 {
 			errs = append(errs, fmt.Errorf("%sHOSTNAMES: at least one hostname is required", p))
 		}
+		var unique []string
 		for _, h := range a.Hostnames {
 			if !validHostname(h) {
 				errs = append(errs, fmt.Errorf("%sHOSTNAMES: invalid hostname %q", p, h))
 				continue
 			}
 			key := strings.ToLower(strings.TrimSuffix(h, "."))
-			if other, dup := owner[key]; dup {
+			switch other, dup := owner[key]; {
+			case !dup:
+				owner[key] = a.Name
+				unique = append(unique, h)
+			case other != a.Name:
 				errs = append(errs, fmt.Errorf("%sHOSTNAMES: hostname %q is also configured for account %q; each hostname must belong to one account", p, h, other))
 			}
-			owner[key] = a.Name
+			// A repeat within the same account is dropped, as before.
 		}
+		a.Hostnames = unique
 		if a.Username == "" {
 			errs = append(errs, fmt.Errorf("%sUSERNAME (or %sUSERNAME_FILE) is required", p, p))
 		}

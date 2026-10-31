@@ -158,8 +158,8 @@ accounts:
       password: {key: ddns/noip-family, property: password}
 ```
 
-- Every account needs a unique `name` (a-z, 0-9 and `-`, not `default`) and
-  its own hostnames; a hostname belongs to exactly one account.
+- Every account needs a unique `name` (a-z, 0-9 and `-`, not `default`), a
+  `provider` and its own hostnames; a hostname belongs to exactly one account.
 - Credentials come from exactly one of `existingSecret` (keys
   `usernameKey`/`passwordKey`, default `username`/`password`),
   `username`+`password` (the chart creates a Secret) or `externalSecret`.
@@ -302,8 +302,10 @@ DDNS_ACCOUNT_WORK_USERNAME=…
 DDNS_ACCOUNT_WORK_PASSWORD=…
 ```
 
-Account names use a-z, 0-9 and `-` (at most 32 characters). Every hostname
-belongs to exactly one account. Logs, the status page, `/status.json` and the
+Account names use a-z, 0-9 and `-` (at most 32 characters).
+`DDNS_ACCOUNT_<NAME>_PROVIDER` is required (only the default account falls
+back to `mijnhost`), so credentials never go to the wrong provider. Every
+hostname belongs to exactly one account. Logs, the status page, `/status.json` and the
 per-hostname metrics carry the account name; `ddns_updater_account_info`
 lists the accounts and their providers.
 
