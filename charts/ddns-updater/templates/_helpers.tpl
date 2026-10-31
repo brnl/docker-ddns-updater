@@ -117,18 +117,36 @@ spec:
 {{- if not (or .Values.hostnames .Values.accounts) }}
 {{- fail "configure hostnames (the default account) and/or accounts" }}
 {{- end }}
+{{- /*
+Secret names the chart creates (itself or via an ExternalSecret) must not be
+used by any other account, whatever the order: otherwise two accounts would
+read each other's credentials.
+*/}}
+{{- $generated := dict }}
+{{- if and .Values.hostnames (ne (include "ddns-updater.credentialsSource" .) "existing") }}
+{{- $_ := set $generated (include "ddns-updater.secretName" .) "default" }}
+{{- end }}
+{{- range .Values.accounts }}
+{{- if not .existingSecret }}
+{{- $secretName := include "ddns-updater.accountSecretName" (dict "root" $ "account" .) }}
+{{- if hasKey $generated $secretName }}
+{{- fail (printf "accounts[%s]: Secret name %q clashes with account %q (names are truncated to 63 characters); use shorter account names or fullnameOverride" .name $secretName (get $generated $secretName)) }}
+{{- end }}
+{{- $_ := set $generated $secretName .name }}
+{{- end }}
+{{- end }}
+{{- if and .Values.hostnames .Values.credentials.existingSecret (hasKey $generated .Values.credentials.existingSecret) }}
+{{- fail (printf "credentials.existingSecret %q is the Secret the chart creates for account %q" .Values.credentials.existingSecret (get $generated .Values.credentials.existingSecret)) }}
+{{- end }}
 {{- $names := dict }}
-{{- $secretNames := dict (include "ddns-updater.secretName" .) "default" }}
 {{- range .Values.accounts }}
 {{- if or (eq .name "default") (hasKey $names .name) }}
 {{- fail (printf "accounts: account name %q must be unique and not \"default\"" .name) }}
 {{- end }}
 {{- $_ := set $names .name true }}
-{{- $secretName := include "ddns-updater.accountSecretName" (dict "root" $ "account" .) }}
-{{- if and (hasKey $secretNames $secretName) (not .existingSecret) }}
-{{- fail (printf "accounts[%s]: Secret name %q clashes with account %q (names are truncated to 63 characters); use shorter account names or fullnameOverride" .name $secretName (get $secretNames $secretName)) }}
+{{- if and .existingSecret (hasKey $generated .existingSecret) }}
+{{- fail (printf "accounts[%s]: existingSecret %q is the Secret the chart creates for account %q" .name .existingSecret (get $generated .existingSecret)) }}
 {{- end }}
-{{- $_ := set $secretNames $secretName .name }}
 {{- $es := and .externalSecret .externalSecret.enabled }}
 {{- $sources := 0 }}
 {{- if .existingSecret }}{{ $sources = add1 $sources }}{{ end }}

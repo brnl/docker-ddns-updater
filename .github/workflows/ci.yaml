@@ -68,6 +68,8 @@ jobs:
           fail $a --set accounts[0].name=default --set accounts[0].existingSecret=x
           fail $a --set accounts[0].externalSecret.enabled=true --set accounts[0].externalSecret.username.key=k --set accounts[0].externalSecret.password.key=k
           fail --set accounts[0].name=a --set accounts[0].hostnames[0]=a.ddns.net --set accounts[0].existingSecret=x   # provider missing
+          # existingSecret pointing at a Secret the chart creates for another account (either order)
+          fail $a --set accounts[0].existingSecret=test-ddns-updater-b --set accounts[1].name=b --set accounts[1].provider=noip --set accounts[1].hostnames[0]=b.ddns.net --set accounts[1].username=u --set accounts[1].password=p
       - name: kubeconform
         run: |
           for f in charts/ddns-updater/ci/*-values.yaml; do
