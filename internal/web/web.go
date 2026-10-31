@@ -45,8 +45,10 @@ var (
 // Info is the static configuration shown on the status page. It must never
 // contain credentials.
 type Info struct {
-	Version            string        `json:"version"`
+	Version string `json:"version"`
+	// Provider lists the providers in use, comma-separated.
 	Provider           string        `json:"provider"`
+	Accounts           []Account     `json:"accounts"`
 	IPv4Enabled        bool          `json:"ipv4_enabled"`
 	IPv6Enabled        bool          `json:"ipv6_enabled"`
 	IPv4Sources        []string      `json:"ipv4_sources,omitempty"`
@@ -55,6 +57,13 @@ type Info struct {
 	DNSRecheckInterval time.Duration `json:"-"`
 	DryRun             bool          `json:"dry_run"`
 	Started            time.Time     `json:"started"`
+}
+
+// Account describes one configured account (never its credentials).
+type Account struct {
+	Name      string `json:"name"`
+	Provider  string `json:"provider"`
+	Hostnames int    `json:"hostnames"`
 }
 
 // Options configures the handler.

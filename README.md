@@ -10,6 +10,9 @@ Supported providers:
 | [mijn.host](https://mijn.host) | `mijnhost` | ✅ | ✅ |
 | [No-IP](https://www.noip.com) | `noip` | ✅ | ✅ |
 
+Several accounts can be used at the same time, also of the same provider
+(see [Multiple accounts](#multiple-accounts)).
+
 ## Features
 
 - Checks the public IP every minute (configurable) using
@@ -96,7 +99,8 @@ Notable values (see [`values.yaml`](charts/ddns-updater/values.yaml) for all):
 
 | Value | Default | Description |
 | ----- | ------- | ----------- |
-| `hostnames` | `[]` | Hostnames to update (required) |
+| `hostnames` | `[]` | Hostnames of the default account |
+| `accounts` | `[]` | Additional accounts, each with its own provider, credentials and hostnames (see below) |
 | `credentials.existingSecret` | `""` | Existing Secret with `username`/`password` keys (recommended) |
 | `credentials.username` / `.password` | `""` | Or let the chart create the Secret |
 | `externalSecret.enabled` | `false` | Let External Secrets Operator create the Secret (see below) |
@@ -126,6 +130,42 @@ filesystem, all capabilities dropped and the `RuntimeDefault` seccomp profile.
 **IPv6 on Kubernetes:** the pod detects the address its own traffic leaves
 from. If pods have no global IPv6 egress, or their egress is NATed to an
 address other than the one you want published, set `hostNetwork: true`.
+
+### Multiple accounts
+
+`hostnames`, `provider` and `credentials` (or `externalSecret`) form the
+*default* account. Add more accounts, for another provider or for more
+credentials of the same provider, under `accounts`:
+
+```yaml
+hostnames:
+  - home.example.com            # default account (mijn.host)
+credentials:
+  existingSecret: ddns-mijnhost
+accounts:
+  - name: noip-home
+    provider: noip
+    hostnames:
+      - home.ddns.net
+    existingSecret: noip-home   # keys: username, password
+  - name: noip-family
+    provider: noip
+    hostnames:
+      - family.ddns.net
+    externalSecret:             # store defaults to externalSecret.secretStoreRef
+      enabled: true
+      username: {key: ddns/noip-family, property: username}
+      password: {key: ddns/noip-family, property: password}
+```
+
+- Every account needs a unique `name` (a-z, 0-9 and `-`, not `default`), a
+  `provider` and its own hostnames; a hostname belongs to exactly one account.
+- Credentials come from exactly one of `existingSecret` (keys
+  `usernameKey`/`passwordKey`, default `username`/`password`),
+  `username`+`password` (the chart creates a Secret) or `externalSecret`.
+- A rejection such as `badauth` only stops the hostnames of the account it
+  belongs to; the other accounts keep updating.
+- Leave `hostnames` empty to use only `accounts`.
 
 ### External Secrets Operator
 
@@ -219,10 +259,12 @@ All settings are environment variables.
 
 | Variable | Default | Description |
 | -------- | ------- | ----------- |
-| `DDNS_PROVIDER` | `mijnhost` | DDNS provider: `mijnhost` or `noip` |
-| `DDNS_HOSTNAMES` | — | Comma-separated hostnames to update (required) |
-| `DDNS_USERNAME` / `DDNS_USERNAME_FILE` | — | DynDNS username, or a file containing it (required) |
-| `DDNS_PASSWORD` / `DDNS_PASSWORD_FILE` | — | DynDNS password, or a file containing it (required) |
+| `DDNS_PROVIDER` | `mijnhost` | Provider of the default account: `mijnhost` or `noip` |
+| `DDNS_HOSTNAMES` | — | Comma-separated hostnames of the default account |
+| `DDNS_USERNAME` / `DDNS_USERNAME_FILE` | — | Username of the default account, or a file containing it |
+| `DDNS_PASSWORD` / `DDNS_PASSWORD_FILE` | — | Password of the default account, or a file containing it |
+| `DDNS_ACCOUNTS` | — | Comma-separated names of additional accounts (see below) |
+| `DDNS_ACCOUNT_<NAME>_*` | — | `PROVIDER`, `HOSTNAMES`, `USERNAME[_FILE]`, `PASSWORD[_FILE]` and `ENDPOINT` of an additional account |
 | `DDNS_IPV4_ENABLED` | `true` | Manage the A record |
 | `DDNS_IPV6_ENABLED` | `false` | Manage the AAAA record |
 | `DDNS_IPV4_SOURCES` | `https://api.ipify.org,https://ifconfig.me/ip` | Plain-text IPv4 sources |
@@ -232,7 +274,7 @@ All settings are environment variables.
 | `DDNS_DNS_RECHECK_INTERVAL` | `5m` | How often to compare with the published DNS record (`0` = only at startup) |
 | `DDNS_DNS_SERVER` | system resolver | DNS server for record lookups: an IP address or hostname with an optional port, e.g. `1.1.1.1`, `dns.quad9.net` or `[2606:4700:4700::1111]:53` |
 | `DDNS_DRY_RUN` | `false` | Log what would be updated without calling the provider |
-| `DDNS_ENDPOINT` | provider default | Override the provider's update URL (testing) |
+| `DDNS_ENDPOINT` | provider default | Override the default account's update URL (testing) |
 | `DDNS_CONTACT_EMAIL` | — | Optional maintainer contact sent in the User-Agent (recommended by No-IP) |
 | `DDNS_HEARTBEAT_INTERVAL` | `1h` | How often to log a one-line status summary (`0` disables it) |
 | `DDNS_LISTEN_ADDR` | `:8080` | Address for the status page and health endpoints (`off` disables it) |
@@ -240,6 +282,32 @@ All settings are environment variables.
 | `DDNS_METRICS` | `true` | Serve Prometheus metrics on `/metrics` |
 | `DDNS_LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error` |
 | `DDNS_LOG_FORMAT` | `json` | `json` or `text` |
+
+### Multiple accounts (environment variables)
+
+The variables above without `ACCOUNT` configure the *default* account; it is
+used when `DDNS_HOSTNAMES` is set. List more accounts in `DDNS_ACCOUNTS` and
+configure each with `DDNS_ACCOUNT_<NAME>_…`, where `<NAME>` is the account
+name in upper case with `-` replaced by `_`:
+
+```sh
+DDNS_ACCOUNTS=noip-home,work
+DDNS_ACCOUNT_NOIP_HOME_PROVIDER=noip
+DDNS_ACCOUNT_NOIP_HOME_HOSTNAMES=home.ddns.net
+DDNS_ACCOUNT_NOIP_HOME_USERNAME_FILE=/run/secrets/noip_home_user
+DDNS_ACCOUNT_NOIP_HOME_PASSWORD_FILE=/run/secrets/noip_home_password
+DDNS_ACCOUNT_WORK_PROVIDER=mijnhost
+DDNS_ACCOUNT_WORK_HOSTNAMES=vpn.example.nl,mail.example.nl
+DDNS_ACCOUNT_WORK_USERNAME=…
+DDNS_ACCOUNT_WORK_PASSWORD=…
+```
+
+Account names use a-z, 0-9 and `-` (at most 32 characters).
+`DDNS_ACCOUNT_<NAME>_PROVIDER` is required (only the default account falls
+back to `mijnhost`), so credentials never go to the wrong provider. Every
+hostname belongs to exactly one account. Logs, the status page, `/status.json` and the
+per-hostname metrics carry the account name; `ddns_updater_account_info`
+lists the accounts and their providers.
 
 ## How it works
 

@@ -8,6 +8,7 @@ import (
 	"net/netip"
 	"net/url"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -20,12 +21,30 @@ var (
 	DefaultIPv6Sources = []string{"https://api6.ipify.org", "https://ifconfig.me/ip"}
 )
 
-// Config holds the runtime configuration.
-type Config struct {
+// Providers lists the supported DDNS providers.
+var Providers = []string{"mijnhost", "noip"}
+
+// DefaultAccount is the name of the account configured with the top-level
+// DDNS_PROVIDER/DDNS_HOSTNAMES/DDNS_USERNAME/DDNS_PASSWORD variables.
+const DefaultAccount = "default"
+
+// Account is one set of provider credentials and the hostnames it updates.
+type Account struct {
+	// Name identifies the account in logs, metrics and the status page.
+	Name      string
 	Provider  string
 	Hostnames []string
 	Username  string
 	Password  string
+	// Endpoint overrides the provider's update URL (testing); usually empty.
+	Endpoint string
+}
+
+// Config holds the runtime configuration.
+type Config struct {
+	// Accounts holds at least one account; every hostname belongs to
+	// exactly one of them.
+	Accounts []Account
 	// ContactEmail is sent in the User-Agent, as No-IP recommends.
 	ContactEmail string
 
@@ -53,10 +72,7 @@ type Config struct {
 func Load(lookup func(string) (string, bool)) (*Config, error) {
 	e := env{lookup: lookup}
 	c := &Config{
-		Provider:           strings.ToLower(e.str("DDNS_PROVIDER", "mijnhost")),
-		Hostnames:          e.list("DDNS_HOSTNAMES", nil),
-		Username:           e.secret("DDNS_USERNAME"),
-		Password:           e.secret("DDNS_PASSWORD"),
+		Accounts:           loadAccounts(&e),
 		ContactEmail:       e.str("DDNS_CONTACT_EMAIL", ""),
 		IPv4Enabled:        e.bool("DDNS_IPV4_ENABLED", true),
 		IPv6Enabled:        e.bool("DDNS_IPV6_ENABLED", false),
@@ -84,26 +100,7 @@ func Load(lookup func(string) (string, bool)) (*Config, error) {
 }
 
 func (c *Config) validate() error {
-	var errs []error
-	switch c.Provider {
-	case "mijnhost", "noip":
-	default:
-		errs = append(errs, fmt.Errorf("DDNS_PROVIDER: unsupported provider %q (supported: mijnhost, noip)", c.Provider))
-	}
-	if len(c.Hostnames) == 0 {
-		errs = append(errs, errors.New("DDNS_HOSTNAMES: at least one hostname is required"))
-	}
-	for _, h := range c.Hostnames {
-		if !validHostname(h) {
-			errs = append(errs, fmt.Errorf("DDNS_HOSTNAMES: invalid hostname %q", h))
-		}
-	}
-	if c.Username == "" {
-		errs = append(errs, errors.New("DDNS_USERNAME (or DDNS_USERNAME_FILE) is required"))
-	}
-	if c.Password == "" {
-		errs = append(errs, errors.New("DDNS_PASSWORD (or DDNS_PASSWORD_FILE) is required"))
-	}
+	errs := c.validateAccounts()
 	if !c.IPv4Enabled && !c.IPv6Enabled {
 		errs = append(errs, errors.New("at least one of DDNS_IPV4_ENABLED or DDNS_IPV6_ENABLED must be true"))
 	}
@@ -176,6 +173,130 @@ func validEmail(s string) bool {
 	}
 	local, domain, ok := strings.Cut(s, "@")
 	return ok && local != "" && !strings.Contains(domain, "@") && validHostname(domain)
+}
+
+// accountPrefix returns the environment variable prefix of an account:
+// "DDNS_" for the default account, "DDNS_ACCOUNT_<NAME>_" otherwise.
+func accountPrefix(name string) string {
+	if name == DefaultAccount {
+		return "DDNS_"
+	}
+	return "DDNS_ACCOUNT_" + strings.ToUpper(strings.ReplaceAll(name, "-", "_")) + "_"
+}
+
+// loadAccounts reads the default account (if DDNS_HOSTNAMES is set, or no
+// DDNS_ACCOUNTS are listed) and every account named in DDNS_ACCOUNTS.
+func loadAccounts(e *env) []Account {
+	names := e.list("DDNS_ACCOUNTS", nil)
+	if e.str("DDNS_HOSTNAMES", "") != "" || len(names) == 0 {
+		names = append([]string{DefaultAccount}, names...)
+	}
+	accounts := make([]Account, 0, len(names))
+	for _, name := range names {
+		name = strings.ToLower(name)
+		p := accountPrefix(name)
+		// Only the default account falls back to mijnhost (its historic
+		// default); other accounts must name their provider, so credentials
+		// never go to a provider by accident.
+		defaultProvider := ""
+		if name == DefaultAccount {
+			defaultProvider = "mijnhost"
+		}
+		a := Account{
+			Name:      name,
+			Provider:  strings.ToLower(e.str(p+"PROVIDER", defaultProvider)),
+			Hostnames: e.list(p+"HOSTNAMES", nil),
+			Username:  e.secret(p + "USERNAME"),
+			Password:  e.secret(p + "PASSWORD"),
+			Endpoint:  e.str(p+"ENDPOINT", ""),
+		}
+		if name == DefaultAccount && a.Endpoint == "" && a.Provider == "mijnhost" {
+			// Older name, only ever meant for mijn.host.
+			a.Endpoint = e.str("DDNS_MIJNHOST_ENDPOINT", "")
+		}
+		accounts = append(accounts, a)
+	}
+	return accounts
+}
+
+func (c *Config) validateAccounts() []error {
+	var errs []error
+	if len(c.Accounts) == 0 {
+		errs = append(errs, errors.New("no accounts configured: set DDNS_HOSTNAMES or DDNS_ACCOUNTS"))
+	}
+	names := map[string]bool{}
+	owner := map[string]string{} // hostname -> account
+	for i := range c.Accounts {
+		a := &c.Accounts[i]
+		p := accountPrefix(a.Name)
+		if !validAccountName(a.Name) {
+			errs = append(errs, fmt.Errorf("DDNS_ACCOUNTS: invalid account name %q (use a-z, 0-9 and -, max 32 characters)", a.Name))
+			continue
+		}
+		if names[a.Name] {
+			errs = append(errs, fmt.Errorf("DDNS_ACCOUNTS: account %q is listed twice", a.Name))
+			continue
+		}
+		names[a.Name] = true
+		if a.Provider == "" {
+			errs = append(errs, fmt.Errorf("%sPROVIDER is required (supported: %s)", p, strings.Join(Providers, ", ")))
+		} else if !slices.Contains(Providers, a.Provider) {
+			errs = append(errs, fmt.Errorf("%sPROVIDER: unsupported provider %q (supported: %s)", p, a.Provider, strings.Join(Providers, ", ")))
+		}
+		if len(a.Hostnames) == 0 {
+			errs = append(errs, fmt.Errorf("%sHOSTNAMES: at least one hostname is required", p))
+		}
+		var unique []string
+		for _, h := range a.Hostnames {
+			if !validHostname(h) {
+				errs = append(errs, fmt.Errorf("%sHOSTNAMES: invalid hostname %q", p, h))
+				continue
+			}
+			key := strings.ToLower(strings.TrimSuffix(h, "."))
+			switch other, dup := owner[key]; {
+			case !dup:
+				owner[key] = a.Name
+				unique = append(unique, h)
+			case other != a.Name:
+				errs = append(errs, fmt.Errorf("%sHOSTNAMES: hostname %q is also configured for account %q; each hostname must belong to one account", p, h, other))
+			}
+			// A repeat within the same account is dropped, as before.
+		}
+		a.Hostnames = unique
+		if a.Username == "" {
+			errs = append(errs, fmt.Errorf("%sUSERNAME (or %sUSERNAME_FILE) is required", p, p))
+		}
+		if a.Password == "" {
+			errs = append(errs, fmt.Errorf("%sPASSWORD (or %sPASSWORD_FILE) is required", p, p))
+		}
+		if a.Endpoint != "" {
+			if u, err := url.Parse(a.Endpoint); err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" || u.User != nil {
+				errs = append(errs, fmt.Errorf("%sENDPOINT: invalid URL (must be http(s) without credentials)", p))
+			}
+		}
+	}
+	return errs
+}
+
+// Hostnames returns every configured hostname, in account order.
+func (c *Config) Hostnames() []string {
+	var out []string
+	for _, a := range c.Accounts {
+		out = append(out, a.Hostnames...)
+	}
+	return out
+}
+
+func validAccountName(s string) bool {
+	if len(s) == 0 || len(s) > 32 || s[0] == '-' || s[len(s)-1] == '-' {
+		return false
+	}
+	for _, r := range s {
+		if !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '-') {
+			return false
+		}
+	}
+	return true
 }
 
 func validateSources(name string, sources []string) []error {

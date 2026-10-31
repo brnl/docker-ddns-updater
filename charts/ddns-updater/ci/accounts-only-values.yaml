@@ -1,0 +1,12 @@
+# Only extra accounts, no default account.
+accounts:
+  - name: a
+    provider: noip
+    hostnames:
+      - a.ddns.net
+    existingSecret: noip-a
+  - name: b
+    provider: noip
+    hostnames:
+      - b.ddns.net
+    existingSecret: noip-b

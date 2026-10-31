@@ -22,14 +22,14 @@ func testHandler(statusPage bool) http.Handler {
 		LastCheck: now.Add(-3 * time.Second),
 		Families:  []updater.FamilyStatus{{Family: "ipv4", Address: "203.0.113.7", ChangedAt: now.Add(-2 * time.Hour)}},
 		Hosts: []updater.HostStatus{
-			{Hostname: "home.example.com", IPv4: "203.0.113.7", InSync: true, LastUpdate: now.Add(-2 * time.Hour)},
-			{Hostname: "stop.example.com", Stopped: true, Failures: 1, LastError: "No-IP rejected the update: badauth (invalid username or password)"},
-			{Hostname: "lan.example.com", InSync: true, DNSWarning: "DNS returned only non-public ipv4 address(es) 10.0.0.1"},
-			{Hostname: "vpn.example.com", Failures: 2, LastError: "<script>alert(1)</script>", NextAttempt: now.Add(time.Minute)},
+			{Account: "default", Provider: "mijnhost", Hostname: "home.example.com", IPv4: "203.0.113.7", InSync: true, LastUpdate: now.Add(-2 * time.Hour)},
+			{Account: "default", Provider: "mijnhost", Hostname: "stop.example.com", Stopped: true, Failures: 1, LastError: "No-IP rejected the update: badauth (invalid username or password)"},
+			{Account: "default", Provider: "mijnhost", Hostname: "lan.example.com", InSync: true, DNSWarning: "DNS returned only non-public ipv4 address(es) 10.0.0.1"},
+			{Account: "default", Provider: "mijnhost", Hostname: "vpn.example.com", Failures: 2, LastError: "<script>alert(1)</script>", NextAttempt: now.Add(time.Minute)},
 		},
 	}
 	return Handler(Options{
-		Info:       Info{Version: "1.2.3", Provider: "mijnhost", IPv4Enabled: true, IPv4Sources: []string{"https://api.ipify.org"}, Interval: 10 * time.Second, Started: now.Add(-time.Hour)},
+		Info:       Info{Version: "1.2.3", Provider: "mijnhost", Accounts: []Account{{Name: "default", Provider: "mijnhost", Hostnames: 4}}, IPv4Enabled: true, IPv4Sources: []string{"https://api.ipify.org"}, Interval: 10 * time.Second, Started: now.Add(-time.Hour)},
 		StatusPage: statusPage,
 		Metrics:    true,
 		Health:     st,
@@ -127,13 +127,14 @@ func TestMetrics(t *testing.T) {
 	body := rec.Body.String()
 	for _, want := range []string{
 		`ddns_updater_info{provider="mijnhost",version="1.2.3"} 1`,
+		`ddns_updater_account_info{account="default",provider="mijnhost"} 1`,
 		`ddns_updater_ready 1`,
 		`ddns_updater_ip_detection_success{family="ipv4"} 1`,
-		`ddns_updater_host_in_sync{hostname="home.example.com"} 1`,
-		`ddns_updater_host_in_sync{hostname="vpn.example.com"} 0`,
-		`ddns_updater_host_updates_stopped{hostname="stop.example.com"} 1`,
-		`ddns_updater_host_consecutive_failures{hostname="vpn.example.com"} 2`,
-		`ddns_updater_updates_total{hostname="home.example.com",result="success"} 0`,
+		`ddns_updater_host_in_sync{account="default",hostname="home.example.com"} 1`,
+		`ddns_updater_host_in_sync{account="default",hostname="vpn.example.com"} 0`,
+		`ddns_updater_host_updates_stopped{account="default",hostname="stop.example.com"} 1`,
+		`ddns_updater_host_consecutive_failures{account="default",hostname="vpn.example.com"} 2`,
+		`ddns_updater_updates_total{account="default",hostname="home.example.com",result="success"} 0`,
 		"# TYPE ddns_updater_updates_total counter",
 	} {
 		if !strings.Contains(body, want+"\n") && !strings.Contains(body, want) {
@@ -156,5 +157,39 @@ func TestMetricsDisabled(t *testing.T) {
 func TestEscapeLabel(t *testing.T) {
 	if got := escapeLabel("a\"b\\c\nd"); got != `a\"b\\c\nd` {
 		t.Errorf("escapeLabel = %q", got)
+	}
+}
+
+func TestStatusPageMultipleAccounts(t *testing.T) {
+	st := health.NewStatus(time.Minute)
+	st.Tick(true)
+	snap := updater.Snapshot{
+		LastCheck: time.Now(),
+		Hosts: []updater.HostStatus{
+			{Hostname: "a.ddns.net", Account: "home", Provider: "noip", InSync: true},
+			{Hostname: "b.example.nl", Account: "work", Provider: "mijnhost", InSync: true},
+		},
+	}
+	h := Handler(Options{
+		Info: Info{Version: "1", Provider: "noip, mijnhost", Accounts: []Account{
+			{Name: "home", Provider: "noip", Hostnames: 1}, {Name: "work", Provider: "mijnhost", Hostnames: 1},
+		}},
+		StatusPage: true, Metrics: true, Health: st,
+		Snapshot: func() updater.Snapshot { return snap },
+	})
+	body := get(t, h, "/").Body.String()
+	for _, want := range []string{"<th>Account</th>", "home <span class=\"muted\">(noip)</span>", "Account work", "mijnhost · 1 hostname"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("page does not contain %q", want)
+		}
+	}
+	m := get(t, h, "/metrics").Body.String()
+	for _, want := range []string{
+		`ddns_updater_account_info{account="home",provider="noip"} 1`,
+		`ddns_updater_host_in_sync{account="work",hostname="b.example.nl"} 1`,
+	} {
+		if !strings.Contains(m, want) {
+			t.Errorf("metrics missing %q", want)
+		}
 	}
 }

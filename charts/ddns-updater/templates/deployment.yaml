@@ -16,13 +16,16 @@ spec:
       {{- include "ddns-updater.selectorLabels" . | nindent 6 }}
   template:
     metadata:
-      {{- $source := include "ddns-updater.credentialsSource" . }}
-      {{- if or .Values.podAnnotations (ne $source "existing") }}
+      {{- /* Restart the pod when chart-managed credentials change. */}}
+      {{- $secrets := include (print $.Template.BasePath "/secret.yaml") . | trim }}
+      {{- $externalSecrets := include (print $.Template.BasePath "/externalsecret.yaml") . | trim }}
+      {{- if or .Values.podAnnotations $secrets $externalSecrets }}
       annotations:
-        {{- if eq $source "chart" }}
-        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
-        {{- else if eq $source "external" }}
-        checksum/externalsecret: {{ include (print $.Template.BasePath "/externalsecret.yaml") . | sha256sum }}
+        {{- with $secrets }}
+        checksum/secret: {{ . | sha256sum }}
+        {{- end }}
+        {{- with $externalSecrets }}
+        checksum/externalsecret: {{ . | sha256sum }}
         {{- end }}
         {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
@@ -57,6 +60,7 @@ spec:
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
           env:
+            {{- if .Values.hostnames }}
             - name: DDNS_PROVIDER
               value: {{ .Values.provider | quote }}
             - name: DDNS_HOSTNAMES
@@ -65,6 +69,24 @@ spec:
               value: /run/secrets/ddns/username
             - name: DDNS_PASSWORD_FILE
               value: /run/secrets/ddns/password
+            {{- end }}
+            {{- with .Values.accounts }}
+            {{- $names := list }}
+            {{- range . }}{{ $names = append $names .name }}{{ end }}
+            - name: DDNS_ACCOUNTS
+              value: {{ join "," $names | quote }}
+            {{- end }}
+            {{- range .Values.accounts }}
+            {{- $prefix := include "ddns-updater.accountEnvPrefix" . }}
+            - name: {{ $prefix }}PROVIDER
+              value: {{ .provider | quote }}
+            - name: {{ $prefix }}HOSTNAMES
+              value: {{ join "," .hostnames | quote }}
+            - name: {{ $prefix }}USERNAME_FILE
+              value: /run/secrets/ddns-accounts/{{ .name }}/username
+            - name: {{ $prefix }}PASSWORD_FILE
+              value: /run/secrets/ddns-accounts/{{ .name }}/password
+            {{- end }}
             - name: DDNS_IPV4_ENABLED
               value: {{ .Values.ipv4.enabled | quote }}
             {{- with .Values.ipv4.sources }}
@@ -123,10 +145,18 @@ spec:
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           volumeMounts:
+            {{- if .Values.hostnames }}
             - name: credentials
               mountPath: /run/secrets/ddns
               readOnly: true
+            {{- end }}
+            {{- range .Values.accounts }}
+            - name: credentials-{{ .name }}
+              mountPath: /run/secrets/ddns-accounts/{{ .name }}
+              readOnly: true
+            {{- end }}
       volumes:
+        {{- if .Values.hostnames }}
         - name: credentials
           secret:
             secretName: {{ include "ddns-updater.secretName" . }}
@@ -136,6 +166,18 @@ spec:
                 path: username
               - key: {{ .Values.credentials.passwordKey }}
                 path: password
+        {{- end }}
+        {{- range .Values.accounts }}
+        - name: credentials-{{ .name }}
+          secret:
+            secretName: {{ include "ddns-updater.accountSecretName" (dict "root" $ "account" .) }}
+            defaultMode: 0440
+            items:
+              - key: {{ .usernameKey | default "username" }}
+                path: username
+              - key: {{ .passwordKey | default "password" }}
+                path: password
+        {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -63,17 +64,23 @@ func run() error {
 
 	userAgent := buildUserAgent(cfg.ContactEmail)
 
-	// DDNS_ENDPOINT overrides the provider's update URL (for testing or a
-	// compatible proxy). DDNS_MIJNHOST_ENDPOINT, its older name, only
-	// applies to mijn.host so credentials never go to another provider's URL.
-	endpoint := os.Getenv("DDNS_ENDPOINT")
-	var prov provider.Provider
-	switch cfg.Provider {
-	case "mijnhost":
-		prov = mijnhost.New(cmp.Or(endpoint, os.Getenv("DDNS_MIJNHOST_ENDPOINT")), cfg.Username, cfg.Password, userAgent, cfg.Timeout)
-	case "noip":
-		prov = noip.New(endpoint, cfg.Username, cfg.Password, userAgent, cfg.Timeout)
+	// One provider client per account, each with its own credentials.
+	var (
+		targets     []updater.Target
+		accountInfo []web.Account
+		providers   []string
+		summary     []string
+	)
+	for _, a := range cfg.Accounts {
+		prov := newProvider(a, userAgent, cfg.Timeout)
+		targets = append(targets, updater.Target{Account: a.Name, Provider: prov, Hostnames: a.Hostnames})
+		accountInfo = append(accountInfo, web.Account{Name: a.Name, Provider: prov.Name(), Hostnames: len(a.Hostnames)})
+		if !slices.Contains(providers, prov.Name()) {
+			providers = append(providers, prov.Name())
+		}
+		summary = append(summary, fmt.Sprintf("%s=%s(%s)", a.Name, prov.Name(), strings.Join(a.Hostnames, ",")))
 	}
+	hostnames := cfg.Hostnames()
 
 	var detectors []updater.Detector
 	if cfg.IPv4Enabled {
@@ -85,14 +92,13 @@ func run() error {
 
 	// A cycle can include IP detection plus a DNS lookup and an update per
 	// hostname; allow a few missed intervals before reporting unhealthy.
-	staleness := 3*cfg.Interval + time.Duration(2+3*len(cfg.Hostnames))*cfg.Timeout
+	staleness := 3*cfg.Interval + time.Duration(2+3*len(hostnames))*cfg.Timeout
 	status := health.NewStatus(staleness)
 
 	// The effective configuration, without credentials.
 	startAttrs := []any{
 		"version", version,
-		"provider", prov.Name(),
-		"hostnames", strings.Join(cfg.Hostnames, ","),
+		"accounts", strings.Join(summary, " "),
 		"ipv4", cfg.IPv4Enabled,
 		"ipv6", cfg.IPv6Enabled,
 		"interval", cfg.Interval.String(),
@@ -116,9 +122,8 @@ func run() error {
 	}
 
 	u := updater.New(updater.Options{
-		Provider:           prov,
+		Targets:            targets,
 		Detectors:          detectors,
-		Hostnames:          cfg.Hostnames,
 		Interval:           cfg.Interval,
 		DNSRecheckInterval: cfg.DNSRecheckInterval,
 		Resolver:           newResolver(cfg.DNSServer, cfg.Timeout),
@@ -132,7 +137,8 @@ func run() error {
 		handler := web.Handler(web.Options{
 			Info: web.Info{
 				Version:            version,
-				Provider:           prov.Name(),
+				Provider:           strings.Join(providers, ", "),
+				Accounts:           accountInfo,
 				IPv4Enabled:        cfg.IPv4Enabled,
 				IPv6Enabled:        cfg.IPv6Enabled,
 				IPv4Sources:        sourcesIf(cfg.IPv4Enabled, cfg.IPv4Sources),
@@ -205,6 +211,16 @@ func (f fixedServerResolver) LookupNetIP(ctx context.Context, network, host stri
 		dnsErr.Server = f.server
 	}
 	return addrs, err
+}
+
+// newProvider returns the provider client for an account.
+func newProvider(a config.Account, userAgent string, timeout time.Duration) provider.Provider {
+	switch a.Provider {
+	case "noip":
+		return noip.New(a.Endpoint, a.Username, a.Password, userAgent, timeout)
+	default: // "mijnhost"; config validation rejects anything else
+		return mijnhost.New(a.Endpoint, a.Username, a.Password, userAgent, timeout)
+	}
 }
 
 // buildUserAgent follows the format No-IP asks update clients to use:

@@ -63,10 +63,111 @@ rendered by this chart from credentials.username/password).
 {{- end }}
 {{- end }}
 
-{{- define "ddns-updater.validate" -}}
-{{- if not .Values.hostnames }}
-{{- fail "hostnames: at least one hostname is required" }}
+{{/* Secret name of an extra account: (dict "root" $ "account" .) */}}
+{{- define "ddns-updater.accountSecretName" -}}
+{{- with .account }}
+{{- default (printf "%s-%s" (include "ddns-updater.fullname" $.root) .name | trunc 63 | trimSuffix "-") .existingSecret }}
 {{- end }}
+{{- end }}
+
+{{/* Environment variable prefix of an extra account. */}}
+{{- define "ddns-updater.accountEnvPrefix" -}}
+{{- printf "DDNS_ACCOUNT_%s_" (.name | upper | replace "-" "_") }}
+{{- end }}
+
+{{/*
+An ExternalSecret. Takes a dict with root, name (resource and target Secret
+name), store, refreshInterval, annotations, username, password, usernameKey
+and passwordKey.
+*/}}
+{{- define "ddns-updater.externalSecretResource" -}}
+apiVersion: {{ .root.Values.externalSecret.apiVersion }}
+kind: ExternalSecret
+metadata:
+  name: {{ .name }}
+  labels:
+    {{- include "ddns-updater.labels" .root | nindent 4 }}
+  {{- with .annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  refreshInterval: {{ .refreshInterval | quote }}
+  secretStoreRef:
+    kind: {{ .store.kind | default "ClusterSecretStore" }}
+    name: {{ .store.name }}
+  target:
+    name: {{ .name }}
+    creationPolicy: Owner
+  data:
+    {{- range $field, $ref := dict "username" .username "password" .password }}
+    - secretKey: {{ get $ (printf "%sKey" $field) }}
+      remoteRef:
+        key: {{ $ref.key | quote }}
+        {{- with $ref.property }}
+        property: {{ . | quote }}
+        {{- end }}
+        {{- with $ref.version }}
+        version: {{ . | quote }}
+        {{- end }}
+    {{- end }}
+{{- end }}
+
+{{- define "ddns-updater.validate" -}}
+{{- if not (or .Values.hostnames .Values.accounts) }}
+{{- fail "configure hostnames (the default account) and/or accounts" }}
+{{- end }}
+{{- /*
+Secret names the chart creates (itself or via an ExternalSecret) must not be
+used by any other account, whatever the order: otherwise two accounts would
+read each other's credentials.
+*/}}
+{{- $generated := dict }}
+{{- if and .Values.hostnames (ne (include "ddns-updater.credentialsSource" .) "existing") }}
+{{- $_ := set $generated (include "ddns-updater.secretName" .) "default" }}
+{{- end }}
+{{- range .Values.accounts }}
+{{- if not .existingSecret }}
+{{- $secretName := include "ddns-updater.accountSecretName" (dict "root" $ "account" .) }}
+{{- if hasKey $generated $secretName }}
+{{- fail (printf "accounts[%s]: Secret name %q clashes with account %q (names are truncated to 63 characters); use shorter account names or fullnameOverride" .name $secretName (get $generated $secretName)) }}
+{{- end }}
+{{- $_ := set $generated $secretName .name }}
+{{- end }}
+{{- end }}
+{{- if and .Values.hostnames .Values.credentials.existingSecret (hasKey $generated .Values.credentials.existingSecret) }}
+{{- fail (printf "credentials.existingSecret %q is the Secret the chart creates for account %q" .Values.credentials.existingSecret (get $generated .Values.credentials.existingSecret)) }}
+{{- end }}
+{{- $names := dict }}
+{{- range .Values.accounts }}
+{{- if or (eq .name "default") (hasKey $names .name) }}
+{{- fail (printf "accounts: account name %q must be unique and not \"default\"" .name) }}
+{{- end }}
+{{- $_ := set $names .name true }}
+{{- if and .existingSecret (hasKey $generated .existingSecret) }}
+{{- fail (printf "accounts[%s]: existingSecret %q is the Secret the chart creates for account %q" .name .existingSecret (get $generated .existingSecret)) }}
+{{- end }}
+{{- $es := and .externalSecret .externalSecret.enabled }}
+{{- $sources := 0 }}
+{{- if .existingSecret }}{{ $sources = add1 $sources }}{{ end }}
+{{- if $es }}{{ $sources = add1 $sources }}{{ end }}
+{{- if or .username .password }}{{ $sources = add1 $sources }}{{ end }}
+{{- if ne (int $sources) 1 }}
+{{- fail (printf "accounts[%s]: set exactly one of existingSecret, externalSecret.enabled, or username+password" .name) }}
+{{- end }}
+{{- if and (or .username .password) (not (and .username .password)) }}
+{{- fail (printf "accounts[%s]: set both username and password" .name) }}
+{{- end }}
+{{- if $es }}
+{{- if not (or (and .externalSecret.secretStoreRef .externalSecret.secretStoreRef.name) $.Values.externalSecret.secretStoreRef.name) }}
+{{- fail (printf "accounts[%s].externalSecret: set secretStoreRef.name (here or in externalSecret.secretStoreRef)" .name) }}
+{{- end }}
+{{- if not (and .externalSecret.username .externalSecret.username.key .externalSecret.password .externalSecret.password.key) }}
+{{- fail (printf "accounts[%s].externalSecret: username.key and password.key are required" .name) }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- if .Values.hostnames }}
 {{- $source := include "ddns-updater.credentialsSource" . }}
 {{- if and .Values.credentials.existingSecret .Values.externalSecret.enabled }}
 {{- fail "credentials.existingSecret and externalSecret.enabled are mutually exclusive" }}
@@ -84,6 +185,7 @@ rendered by this chart from credentials.username/password).
 {{- if eq $source "chart" }}
 {{- if or (not .Values.credentials.username) (not .Values.credentials.password) }}
 {{- fail "credentials: set credentials.existingSecret, enable externalSecret, or set both credentials.username and credentials.password" }}
+{{- end }}
 {{- end }}
 {{- end }}
 {{- with .Values.metrics }}

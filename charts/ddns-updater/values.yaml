@@ -1,7 +1,9 @@
 # -- DDNS provider: mijnhost or noip.
 provider: mijnhost
 
-# -- Hostnames (FQDNs) to keep up to date. Required.
+# The default account: provider, hostnames and credentials below. Leave
+# hostnames empty to use only the accounts list.
+# -- Hostnames (FQDNs) of the default account.
 hostnames: []
 #  - home.example.com
 
@@ -33,6 +35,34 @@ externalSecret:
     key: ""
     property: ""
   annotations: {}
+
+# -- Additional accounts: another provider, or more credentials for the same
+# provider. Each needs a unique name (a-z, 0-9, -; not "default") and its own
+# hostnames (a hostname belongs to exactly one account). Credentials come from
+# exactly one of: username/password (the chart creates a Secret),
+# existingSecret, or externalSecret (External Secrets Operator; the store
+# defaults to externalSecret.secretStoreRef). A "badauth" or similar
+# rejection only stops the hostnames of the account it belongs to.
+accounts: []
+#  - name: home
+#    provider: noip
+#    hostnames:
+#      - home.ddns.net
+#    existingSecret: noip-home     # keys: username, password
+#    # usernameKey: username
+#    # passwordKey: password
+#  - name: work
+#    provider: mijnhost             # required for every account
+#    hostnames:
+#      - vpn.example.nl
+#    externalSecret:
+#      enabled: true
+#      username:
+#        key: ddns/work
+#        property: username
+#      password:
+#        key: ddns/work
+#        property: password
 
 ipv4:
   enabled: true
