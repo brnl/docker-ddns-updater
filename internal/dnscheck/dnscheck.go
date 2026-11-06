@@ -23,9 +23,13 @@ import (
 const (
 	// cacheTTL is how long discovered nameservers are reused.
 	cacheTTL = time.Hour
-	// negativeTTL is how long a failed discovery is remembered before
-	// trying again (the fallback resolver is used meanwhile).
+	// negativeTTL is how long a failed discovery, or a zone whose
+	// nameservers did not answer, is skipped (the resolver is used
+	// meanwhile) before trying again.
 	negativeTTL = 15 * time.Minute
+	// serverTimeout bounds the query to one nameserver, so an unreachable
+	// one is skipped quickly in favour of the next.
+	serverTimeout = 3 * time.Second
 )
 
 // Recursive is a regular (recursive) resolver: it finds the nameservers and
@@ -43,21 +47,36 @@ type Resolver struct {
 	now       func() time.Time
 	// port is the nameservers' DNS port; tests override it.
 	port string
-	// query performs the authoritative lookup; tests may replace it.
-	query func(ctx context.Context, servers []string, network, host string) ([]netip.Addr, error)
 
 	mu       sync.Mutex
-	cache    map[string]*entry           // hostname -> nameservers
+	hosts    map[string]*hostEntry       // hostname -> its zone
+	zones    map[string]*zoneEntry       // zone -> nameservers
 	fallback map[string]*condlog.Tracker // zone (or hostname) -> fallback state
 }
 
-type entry struct {
-	zone        string
+type hostEntry struct {
+	zone    string
+	err     error  // discovery failed
+	cname   string // the hostname is an alias for this name
+	expires time.Time
+	// loggedCNAME avoids repeating the alias notice at every refresh.
+	loggedCNAME string
+}
+
+type zoneEntry struct {
 	nameservers []string // host names, for logs
-	servers     []string // "ip:port" to query
+	servers     []string // "ip:port", IPv4 first
 	err         error
 	expires     time.Time
+	// skipUntil is set when none of the nameservers answered.
+	skipUntil time.Time
 }
+
+// cnameError reports that the hostname is an alias: its records live in
+// another zone, so the resolver (which follows the alias) is used.
+type cnameError struct{ target string }
+
+func (e *cnameError) Error() string { return "hostname is a CNAME for " + e.target }
 
 // New returns a Resolver that discovers nameservers with, and falls back to,
 // recursive.
@@ -65,86 +84,117 @@ func New(recursive Recursive, timeout time.Duration, log *slog.Logger) *Resolver
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
-	r := &Resolver{
+	return &Resolver{
 		recursive: recursive,
 		timeout:   timeout,
 		log:       log,
 		now:       time.Now,
 		port:      "53",
-		cache:     map[string]*entry{},
+		hosts:     map[string]*hostEntry{},
+		zones:     map[string]*zoneEntry{},
 		fallback:  map[string]*condlog.Tracker{},
 	}
-	r.query = r.queryServers
-	return r
 }
 
 // LookupNetIP looks up host's addresses ("ip4" or "ip6") at its zone's
 // authoritative nameservers. A "not found" answer from them is returned as
 // is; any other failure falls back to the recursive resolver.
 func (r *Resolver) LookupNetIP(ctx context.Context, network, host string) ([]netip.Addr, error) {
-	e := r.nameservers(ctx, host)
-	key := host
-	if e.zone != "" {
-		key = e.zone
-	}
-	if e.err == nil {
-		addrs, err := r.query(ctx, e.servers, network, host)
+	h, z := r.lookupZone(ctx, host)
+	switch {
+	case ctx.Err() != nil:
+		return nil, ctx.Err()
+	case h.cname != "":
+		// An alias: expected, not a failure; the resolver follows it.
+	case h.err != nil:
+		r.failed(host, host, h.err)
+	case z.err != nil:
+		r.failed(h.zone, host, z.err)
+	case r.now().Before(z.skipUntil):
+		// The nameservers did not answer recently: don't wait for them on
+		// every lookup (the failure is logged already).
+	default:
+		addrs, err := r.queryServers(ctx, z.servers, network, host)
 		var dnsErr *net.DNSError
-		if err == nil || (errors.As(err, &dnsErr) && dnsErr.IsNotFound) {
-			r.recovered(key)
+		var cname *cnameError
+		switch {
+		case err == nil || (errors.As(err, &dnsErr) && dnsErr.IsNotFound):
+			r.recovered(h.zone)
 			return addrs, err
-		}
-		if ctx.Err() != nil {
+		case ctx.Err() != nil:
 			return nil, err
+		case errors.As(err, &cname):
+			r.mu.Lock()
+			h.cname = cname.target
+			logIt := h.loggedCNAME != cname.target
+			h.loggedCNAME = cname.target
+			r.mu.Unlock()
+			if logIt {
+				r.log.Info("hostname is an alias (CNAME); checking its records with the regular resolver",
+					"hostname", host, "target", cname.target)
+			}
+		default:
+			r.mu.Lock()
+			z.skipUntil = r.now().Add(negativeTTL)
+			r.mu.Unlock()
+			r.failed(h.zone, host, fmt.Errorf("querying %s: %w", strings.Join(z.nameservers, ", "), err))
 		}
-		r.failed(key, host, fmt.Errorf("querying %s: %w", strings.Join(e.nameservers, ", "), err))
-	} else if ctx.Err() == nil {
-		r.failed(key, host, e.err)
 	}
 	return r.recursive.LookupNetIP(ctx, network, rooted(host))
 }
 
-// nameservers returns the (cached) authoritative nameservers for host.
-func (r *Resolver) nameservers(ctx context.Context, host string) *entry {
+// lookupZone returns host's (cached) zone and that zone's (cached)
+// nameservers.
+func (r *Resolver) lookupZone(ctx context.Context, host string) (*hostEntry, *zoneEntry) {
 	now := r.now()
 	r.mu.Lock()
-	e, ok := r.cache[host]
+	h := r.hosts[host]
 	r.mu.Unlock()
-	if ok && now.Before(e.expires) {
-		return e
-	}
-	e = r.discover(ctx, host)
-	if ctx.Err() != nil {
-		return e // do not cache a cancelled discovery
-	}
-	if e.err == nil {
-		e.expires = now.Add(cacheTTL)
-		if !ok || ok && !slices.Equal(e.nameservers, r.cachedNameservers(host)) {
-			r.log.Info("checking DNS records at the authoritative nameservers",
-				"hostname", host, "zone", e.zone, "nameservers", strings.Join(e.nameservers, ","))
+	if h == nil || !now.Before(h.expires) {
+		zone, err := r.findZone(ctx, host)
+		if ctx.Err() != nil {
+			return &hostEntry{err: ctx.Err()}, &zoneEntry{}
 		}
-	} else {
-		e.expires = now.Add(negativeTTL)
+		fresh := &hostEntry{zone: zone, err: err, expires: now.Add(cacheTTL)}
+		if err != nil {
+			fresh.expires = now.Add(negativeTTL)
+		}
+		if h != nil {
+			fresh.loggedCNAME = h.loggedCNAME
+		}
+		h = fresh
+		r.mu.Lock()
+		r.hosts[host] = h
+		r.mu.Unlock()
 	}
+	if h.err != nil {
+		return h, &zoneEntry{}
+	}
+
 	r.mu.Lock()
-	r.cache[host] = e
+	z := r.zones[h.zone]
 	r.mu.Unlock()
-	return e
-}
-
-func (r *Resolver) cachedNameservers(host string) []string {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if e, ok := r.cache[host]; ok {
-		return e.nameservers
+	if z == nil || !now.Before(z.expires) {
+		old := z
+		z = r.zoneNameservers(ctx, h.zone)
+		if ctx.Err() != nil {
+			return h, z
+		}
+		if z.err == nil && (old == nil || !slices.Equal(old.nameservers, z.nameservers)) {
+			r.log.Info("checking DNS records at the authoritative nameservers",
+				"zone", h.zone, "nameservers", strings.Join(z.nameservers, ","))
+		}
+		r.mu.Lock()
+		r.zones[h.zone] = z
+		r.mu.Unlock()
 	}
-	return nil
+	return h, z
 }
 
-// discover walks up from host ("a.b.example.com", "b.example.com",
+// findZone walks up from host ("a.b.example.com", "b.example.com",
 // "example.com") to the closest name with NS records: the zone apex. The
 // top-level domain is never used: its servers only delegate.
-func (r *Resolver) discover(ctx context.Context, host string) *entry {
+func (r *Resolver) findZone(ctx context.Context, host string) (string, error) {
 	labels := strings.Split(strings.TrimSuffix(host, "."), ".")
 	if len(labels) > 0 && labels[0] == "*" {
 		labels = labels[1:]
@@ -157,64 +207,93 @@ func (r *Resolver) discover(ctx context.Context, host string) *entry {
 			if errors.As(err, &dnsErr) && dnsErr.IsNotFound {
 				continue // not a zone apex (or no NS records): go up
 			}
-			return &entry{zone: zone, err: fmt.Errorf("looking up the nameservers of %s: %w", zone, err)}
+			return "", fmt.Errorf("looking up the nameservers of %s: %w", zone, err)
 		}
-		if len(ns) == 0 {
-			continue
+		if len(ns) > 0 {
+			return zone, nil
 		}
-		e := &entry{zone: zone}
-		var v4, v6 []string
-		for _, n := range ns {
-			name := strings.TrimSuffix(n.Host, ".")
-			e.nameservers = append(e.nameservers, name)
-			addrs, err := r.recursive.LookupNetIP(ctx, "ip", rooted(name))
-			if err != nil {
-				continue
-			}
-			for _, a := range addrs {
-				a = a.Unmap()
-				hp := net.JoinHostPort(a.String(), r.port)
-				if a.Is4() {
-					v4 = append(v4, hp)
-				} else {
-					v6 = append(v6, hp)
-				}
-			}
-		}
-		slices.Sort(e.nameservers)
-		// IPv4 first: IPv6 egress is often unavailable in containers.
-		e.servers = append(v4, v6...)
-		if len(e.servers) == 0 {
-			e.err = fmt.Errorf("no address found for the nameservers of %s (%s)", zone, strings.Join(e.nameservers, ", "))
-		}
-		return e
 	}
-	return &entry{err: fmt.Errorf("no nameservers found for %s", host)}
+	return "", fmt.Errorf("no nameservers found for %s", host)
 }
 
-// queryServers asks the given nameservers (in order, until one answers).
+// zoneNameservers looks up the nameservers of zone and their addresses.
+func (r *Resolver) zoneNameservers(ctx context.Context, zone string) *zoneEntry {
+	z := &zoneEntry{expires: r.now().Add(cacheTTL)}
+	ns, err := r.recursive.LookupNS(ctx, rooted(zone))
+	if err != nil {
+		z.err = fmt.Errorf("looking up the nameservers of %s: %w", zone, err)
+		z.expires = r.now().Add(negativeTTL)
+		return z
+	}
+	var v4, v6 []string
+	for _, n := range ns {
+		name := strings.TrimSuffix(n.Host, ".")
+		z.nameservers = append(z.nameservers, name)
+		addrs, err := r.recursive.LookupNetIP(ctx, "ip", rooted(name))
+		if err != nil {
+			continue
+		}
+		for _, a := range addrs {
+			a = a.Unmap()
+			hp := net.JoinHostPort(a.String(), r.port)
+			if a.Is4() {
+				v4 = append(v4, hp)
+			} else {
+				v6 = append(v6, hp)
+			}
+		}
+	}
+	slices.Sort(z.nameservers)
+	// IPv4 first: IPv6 egress is often unavailable in containers.
+	z.servers = append(v4, v6...)
+	if len(z.servers) == 0 {
+		z.err = fmt.Errorf("no address found for the nameservers of %s (%s)", zone, strings.Join(z.nameservers, ", "))
+		z.expires = r.now().Add(negativeTTL)
+	}
+	return z
+}
+
+// queryServers asks the nameservers one by one, each with its own time
+// limit, until one gives an answer (records, or an authoritative "not
+// found").
 func (r *Resolver) queryServers(ctx context.Context, servers []string, network, host string) ([]netip.Addr, error) {
-	dialer := &net.Dialer{Timeout: r.timeout}
+	var errs []error
+	for _, s := range servers {
+		addrs, err := r.queryServer(ctx, s, network, host)
+		var dnsErr *net.DNSError
+		var cname *cnameError
+		if err == nil || (errors.As(err, &dnsErr) && dnsErr.IsNotFound) || errors.As(err, &cname) || ctx.Err() != nil {
+			return addrs, err
+		}
+		errs = append(errs, err)
+	}
+	return nil, errors.Join(errs...)
+}
+
+func (r *Resolver) queryServer(ctx context.Context, server, network, host string) ([]netip.Addr, error) {
+	ctx, cancel := context.WithTimeout(ctx, min(r.timeout, serverTimeout))
+	defer cancel()
+	dialer := &net.Dialer{}
 	res := &net.Resolver{
 		PreferGo: true,
 		Dial: func(ctx context.Context, proto, _ string) (net.Conn, error) {
-			var errs []error
-			for _, s := range servers {
-				c, err := dialer.DialContext(ctx, proto, s)
-				if err == nil {
-					return c, nil
-				}
-				errs = append(errs, err)
-			}
-			return nil, errors.Join(errs...)
+			return dialer.DialContext(ctx, proto, server)
 		},
 	}
-	addrs, err := res.LookupNetIP(ctx, network, rooted(host))
+	name := rooted(host)
+	addrs, err := res.LookupNetIP(ctx, network, name)
 	var dnsErr *net.DNSError
 	if errors.As(err, &dnsErr) {
 		// The Go resolver names the server from /etc/resolv.conf here,
 		// which was not queried.
-		dnsErr.Server = strings.Join(servers, ",")
+		dnsErr.Server = server
+		if dnsErr.IsNotFound {
+			// "Not found" is also what an alias into another zone looks
+			// like (the answer holds only the CNAME): tell them apart.
+			if target, cerr := res.LookupCNAME(ctx, name); cerr == nil && !strings.EqualFold(target, name) {
+				return nil, &cnameError{target: strings.TrimSuffix(target, ".")}
+			}
+		}
 	}
 	return addrs, err
 }

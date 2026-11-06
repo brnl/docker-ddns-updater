@@ -254,11 +254,14 @@ its NS records via the regular resolver, caches them for an hour, and queries
 the A/AAAA records there. That answer is always current: no resolver cache
 (TTL) and no internal view of the zone (split-horizon DNS).
 
-If that is not possible, for example when outbound DNS (port 53) to the
-internet is blocked, or when the hostname is a CNAME into another zone, the
-updater falls back to the regular resolver, logs a warning and repeats it every
-15 minutes while it lasts. With `networkPolicy.enabled`, port 53 egress is
-already allowed. Set `dnsAuthoritative: false` to always use the resolver.
+Each nameserver gets its own short time limit, so a dead one only costs a few
+seconds before the next is asked. If none of them answer, for example when
+outbound DNS (port 53) to the internet is blocked, the updater falls back to
+the regular resolver, logs a warning (repeated every 15 minutes while it
+lasts) and leaves that zone's nameservers alone for 15 minutes. A hostname
+that is an alias (CNAME) into another zone is checked with the resolver too,
+noted once in the log. With `networkPolicy.enabled`, port 53 egress is already
+allowed. Set `dnsAuthoritative: false` to always use the resolver.
 
 `dnsServer` selects that resolver (default: the cluster DNS). With the
 resolver, answers that contain only non-public addresses (split-horizon DNS)

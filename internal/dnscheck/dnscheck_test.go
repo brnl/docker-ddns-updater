@@ -19,6 +19,7 @@ type authServer struct {
 	conn    net.PacketConn
 	mu      sync.Mutex
 	records map[string][]netip.Addr // "name." -> addresses (A and AAAA)
+	cnames  map[string]string       // "name." -> "target."
 	refuse  bool
 	queries []string
 }
@@ -29,7 +30,7 @@ func newAuthServer(t *testing.T) *authServer {
 	if err != nil {
 		t.Skipf("cannot listen on UDP: %v", err)
 	}
-	s := &authServer{conn: conn, records: map[string][]netip.Addr{}}
+	s := &authServer{conn: conn, records: map[string][]netip.Addr{}, cnames: map[string]string{}}
 	t.Cleanup(func() { conn.Close() })
 	go s.serve()
 	return s
@@ -39,6 +40,12 @@ func (s *authServer) set(name string, addrs ...netip.Addr) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.records[name] = addrs
+}
+
+func (s *authServer) setCNAME(name, target string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cnames[name] = target
 }
 
 func (s *authServer) setRefuse(v bool) {
@@ -89,6 +96,7 @@ func (s *authServer) answer(q []byte) []byte {
 	s.mu.Lock()
 	s.queries = append(s.queries, name)
 	addrs, known := s.records[name]
+	target, alias := s.cnames[name]
 	refuse := s.refuse
 	s.mu.Unlock()
 
@@ -97,6 +105,15 @@ func (s *authServer) answer(q []byte) []byte {
 	switch {
 	case refuse:
 		flags = 0x8005 // QR, REFUSED
+	case alias:
+		// Only the CNAME: its target lives in another zone.
+		var rdata []byte
+		for _, l := range strings.Split(strings.TrimSuffix(target, "."), ".") {
+			rdata = append(append(rdata, byte(len(l))), l...)
+		}
+		rdata = append(rdata, 0)
+		rr := []byte{0xc0, 0x0c, 0, 5, 0, 1, 0, 0, 0, 60, 0, byte(len(rdata))}
+		answers = append(answers, append(rr, rdata...))
 	case !known:
 		flags |= 3 // NXDOMAIN
 	default:
@@ -205,7 +222,7 @@ func TestAuthoritativeAnswer(t *testing.T) {
 	if q := f.srv.seen(); len(q) == 0 || q[0] != "home.example.com." {
 		t.Errorf("queries = %v", q)
 	}
-	if !strings.Contains(f.logs.String(), "zone=example.com") || !strings.Contains(f.logs.String(), "ns1.example.net,ns2.example.net") {
+	if !strings.Contains(f.logs.String(), "zone=example.com") || !strings.Contains(f.logs.String(), "nameservers=ns1.example.net,ns2.example.net") {
 		t.Errorf("nameservers not logged: %s", f.logs.String())
 	}
 }
@@ -240,6 +257,12 @@ func TestFallbackWhenRefusedAndRecovery(t *testing.T) {
 		t.Error("unchanged fallback logged again immediately")
 	}
 	f.srv.setRefuse(false)
+	// The zone is skipped for the negative TTL, then tried again.
+	f.now = f.now.Add(negativeTTL - time.Minute)
+	if got, _ := f.r.LookupNetIP(ctx, "ip4", "home.example.com"); got[0] != netip.MustParseAddr("198.51.100.1") {
+		t.Fatalf("retried the refusing nameservers within the negative TTL: %v", got)
+	}
+	f.now = f.now.Add(2 * time.Minute)
 	if got, _ := f.r.LookupNetIP(ctx, "ip4", "home.example.com"); got[0] != netip.MustParseAddr("203.0.113.7") {
 		t.Fatalf("not back on the authoritative answer: %v", got)
 	}
@@ -286,19 +309,18 @@ func TestDiscoveryCachingAndFailure(t *testing.T) {
 func TestNeverQueriesTLD(t *testing.T) {
 	f := newFixture(t)
 	f.rec.ns["org."] = []string{"a0.org-servers.example."}
-	e := f.r.discover(context.Background(), "host.other.org")
-	if e.err == nil || e.zone == "org" {
-		t.Fatalf("used the TLD as zone: %+v", e)
+	if zone, err := f.r.findZone(context.Background(), "host.other.org"); err == nil || zone == "org" {
+		t.Fatalf("used the TLD as zone: %q %v", zone, err)
 	}
 }
 
 func TestWildcardAndTrailingDot(t *testing.T) {
 	f := newFixture(t)
-	if e := f.r.discover(context.Background(), "*.example.com"); e.err != nil || e.zone != "example.com" {
-		t.Errorf("wildcard: %+v", e)
+	if zone, err := f.r.findZone(context.Background(), "*.example.com"); err != nil || zone != "example.com" {
+		t.Errorf("wildcard: %q %v", zone, err)
 	}
-	if e := f.r.discover(context.Background(), "home.example.com."); e.err != nil || e.zone != "example.com" {
-		t.Errorf("trailing dot: %+v", e)
+	if zone, err := f.r.findZone(context.Background(), "home.example.com."); err != nil || zone != "example.com" {
+		t.Errorf("trailing dot: %q %v", zone, err)
 	}
 }
 
@@ -311,5 +333,101 @@ func TestDiscoveryErrorFallsBack(t *testing.T) {
 	}
 	if !strings.Contains(f.logs.String(), "looking up the nameservers of home.example.com") {
 		t.Errorf("discovery error not logged: %s", f.logs.String())
+	}
+}
+
+func TestFailoverToNextNameserver(t *testing.T) {
+	f := newFixture(t)
+	// ns0 silently drops every query (a dead or firewalled nameserver);
+	// it is tried first.
+	hole, err := net.ListenPacket("udp4", net.JoinHostPort("127.0.0.2", f.srv.port()))
+	if err != nil {
+		t.Skipf("cannot listen on 127.0.0.2: %v", err)
+	}
+	defer hole.Close()
+	f.rec.ns["example.com."] = []string{"ns0.example.net.", "ns1.example.net."}
+	f.rec.addrs["ns0.example.net."] = []netip.Addr{netip.MustParseAddr("127.0.0.2")}
+	f.r.timeout = 300 * time.Millisecond
+
+	start := time.Now()
+	got, err := f.r.LookupNetIP(context.Background(), "ip4", "home.example.com")
+	if err != nil || len(got) != 1 || got[0] != netip.MustParseAddr("203.0.113.7") {
+		t.Fatalf("got %v, %v; want the answer of the second nameserver", got, err)
+	}
+	if d := time.Since(start); d > 2*time.Second {
+		t.Errorf("failover took %s; the dead nameserver should only cost its own time limit", d)
+	}
+}
+
+func TestUnansweredZoneIsSkippedForAWhile(t *testing.T) {
+	f := newFixture(t)
+	hole, err := net.ListenPacket("udp4", net.JoinHostPort("127.0.0.2", f.srv.port()))
+	if err != nil {
+		t.Skipf("cannot listen on 127.0.0.2: %v", err)
+	}
+	defer hole.Close()
+	f.rec.ns["example.com."] = []string{"ns0.example.net."}
+	f.rec.addrs["ns0.example.net."] = []netip.Addr{netip.MustParseAddr("127.0.0.2")}
+	f.r.timeout = 200 * time.Millisecond
+	ctx := context.Background()
+
+	got, err := f.r.LookupNetIP(ctx, "ip4", "home.example.com")
+	if err != nil || got[0] != netip.MustParseAddr("198.51.100.1") {
+		t.Fatalf("fallback = %v, %v", got, err)
+	}
+	// Within the negative TTL the dead nameservers are not waited for again.
+	start := time.Now()
+	f.now = f.now.Add(10 * time.Minute)
+	if _, err := f.r.LookupNetIP(ctx, "ip6", "home.example.com"); err != nil && !strings.Contains(err.Error(), "no such host") {
+		t.Fatal(err)
+	}
+	if d := time.Since(start); d > 100*time.Millisecond {
+		t.Errorf("waited %s for nameservers that just failed", d)
+	}
+	// After it, they are tried again.
+	f.rec.ns["example.com."] = []string{"ns1.example.net."}
+	f.now = f.now.Add(2 * time.Hour)
+	if got, _ := f.r.LookupNetIP(ctx, "ip4", "home.example.com"); got[0] != netip.MustParseAddr("203.0.113.7") {
+		t.Fatalf("not retried after the negative TTL: %v", got)
+	}
+}
+
+func TestCNAMEUsesResolver(t *testing.T) {
+	f := newFixture(t)
+	f.srv.setCNAME("alias.example.com.", "home.ddns.net.")
+	f.rec.addrs["alias.example.com."] = []netip.Addr{netip.MustParseAddr("192.0.2.44")}
+	ctx := context.Background()
+	got, err := f.r.LookupNetIP(ctx, "ip4", "alias.example.com")
+	if err != nil || len(got) != 1 || got[0] != netip.MustParseAddr("192.0.2.44") {
+		t.Fatalf("got %v, %v; want the resolver's answer for the alias", got, err)
+	}
+	if !strings.Contains(f.logs.String(), "hostname is an alias") || strings.Contains(f.logs.String(), "lookup failed") {
+		t.Errorf("unexpected logs: %s", f.logs.String())
+	}
+	f.logs.Reset()
+	f.r.LookupNetIP(ctx, "ip4", "alias.example.com")
+	f.now = f.now.Add(2 * time.Hour) // cache refresh: no repeated notice
+	f.r.LookupNetIP(ctx, "ip4", "alias.example.com")
+	if strings.Contains(f.logs.String(), "hostname is an alias") {
+		t.Errorf("alias notice repeated: %s", f.logs.String())
+	}
+}
+
+func TestNameserversSharedPerZone(t *testing.T) {
+	f := newFixture(t)
+	f.srv.set("other.example.com.", netip.MustParseAddr("203.0.113.8"))
+	ctx := context.Background()
+	f.r.LookupNetIP(ctx, "ip4", "home.example.com")
+	before := len(f.rec.ipCalls)
+	if got, _ := f.r.LookupNetIP(ctx, "ip4", "other.example.com"); got[0] != netip.MustParseAddr("203.0.113.8") {
+		t.Fatalf("got %v", got)
+	}
+	for _, c := range f.rec.ipCalls[before:] {
+		if strings.Contains(c, "ns1.example.net") || strings.Contains(c, "ns2.example.net") {
+			t.Errorf("nameserver addresses looked up again for a second host in the same zone: %v", f.rec.ipCalls[before:])
+		}
+	}
+	if n := strings.Count(f.logs.String(), "checking DNS records at the authoritative nameservers"); n != 1 {
+		t.Errorf("nameservers logged %d times, want once per zone", n)
 	}
 }
