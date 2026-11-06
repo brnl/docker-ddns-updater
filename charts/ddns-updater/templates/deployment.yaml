@@ -115,6 +115,8 @@ spec:
             - name: DDNS_CONTACT_EMAIL
               value: {{ . | quote }}
             {{- end }}
+            - name: DDNS_DNS_AUTHORITATIVE
+              value: {{ .Values.dnsAuthoritative | quote }}
             - name: DDNS_HEARTBEAT_INTERVAL
               value: {{ .Values.heartbeatInterval | quote }}
             - name: DDNS_LISTEN_ADDR

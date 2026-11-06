@@ -27,8 +27,10 @@ Several accounts can be used at the same time, also of the same provider
   exponential backoff, a long pause (mijn.host) or a full stop until the
   configuration is fixed (No-IP) on bad credentials or an unknown hostname,
   and No-IP's 30-minute wait after server errors.
-- Ignores split-horizon DNS answers: only public addresses count as the
-  published record.
+- Checks the published record at the zone's **authoritative nameservers**
+  (e.g. No-IP's or mijn.host's), so it always sees the current data, never a
+  cached or split-horizon answer; falls back to the regular resolver if that
+  is not possible.
 - A built-in **status page**, Prometheus **metrics** with an optional
   ServiceMonitor and alerting rules, and `/healthz`, `/readyz` and
   `/status.json`.
@@ -108,7 +110,8 @@ Notable values (see [`values.yaml`](charts/ddns-updater/values.yaml) for all):
 | `ipv4.enabled` / `ipv6.enabled` | `true` / `false` | Address families to manage |
 | `interval` | `60s` | How often to check the public IP |
 | `dnsRecheckInterval` | `5m` | How often to compare with the published DNS record |
-| `dnsServer` | `""` | DNS server for record lookups; set it with split-horizon DNS (see below) |
+| `dnsAuthoritative` | `true` | Check records at the zone's authoritative nameservers (see below) |
+| `dnsServer` | `""` | Resolver used to find the nameservers, and as fallback (default: cluster DNS) |
 | `heartbeatInterval` | `1h` | How often to log a status summary (`0` disables it) |
 | `hostNetwork` | `false` | Use the node's network (see below) |
 | `statusPage.enabled` | `true` | Serve the status page |
@@ -241,13 +244,29 @@ The readiness probe deliberately uses `/healthz`, so the status page stays
 reachable while updates fail. Use the metrics and alerts above, or `/readyz`,
 to detect failing updates.
 
-### Split-horizon DNS
+### Checking the published records
 
-If the cluster resolves your hostnames to internal addresses (split-horizon
-DNS), those answers say nothing about the public record. The updater ignores
-DNS answers that contain only non-public addresses, logs a warning and shows
-it on the status page. Point `dnsServer` at a public resolver so the record can
-be verified:
+To decide whether an update is needed, the updater compares the public IP
+with the record that is actually published. By default it asks the zone's
+**authoritative nameservers** directly: it finds the zone of each hostname
+(for `home.ddns.net` that is `ddns.net`, served by No-IP's nameservers) and
+its NS records via the regular resolver, caches them for an hour, and queries
+the A/AAAA records there. That answer is always current: no resolver cache
+(TTL) and no internal view of the zone (split-horizon DNS).
+
+Each nameserver gets its own short time limit, so a dead one only costs a few
+seconds before the next is asked. If none of them answer, for example when
+outbound DNS (port 53) to the internet is blocked, the updater falls back to
+the regular resolver, logs a warning (repeated every 15 minutes while it
+lasts) and leaves that zone's nameservers alone for 15 minutes. A hostname
+that is an alias (CNAME) into another zone is checked with the resolver too,
+noted once in the log. With `networkPolicy.enabled`, port 53 egress is already
+allowed. Set `dnsAuthoritative: false` to always use the resolver.
+
+`dnsServer` selects that resolver (default: the cluster DNS). With the
+resolver, answers that contain only non-public addresses (split-horizon DNS)
+are ignored and reported on the status page; then point `dnsServer` at a
+public resolver:
 
 ```yaml
 dnsServer: 1.1.1.1 # or a hostname such as dns.quad9.net, optionally with :port
@@ -272,7 +291,8 @@ All settings are environment variables.
 | `DDNS_INTERVAL` | `60s` | Check interval (`30`, `30s`, `1m`, ...). Each check queries every source, so don't go much lower than 30s |
 | `DDNS_TIMEOUT` | `10s` | Timeout per HTTP request |
 | `DDNS_DNS_RECHECK_INTERVAL` | `5m` | How often to compare with the published DNS record (`0` = only at startup) |
-| `DDNS_DNS_SERVER` | system resolver | DNS server for record lookups: an IP address or hostname with an optional port, e.g. `1.1.1.1`, `dns.quad9.net` or `[2606:4700:4700::1111]:53` |
+| `DDNS_DNS_AUTHORITATIVE` | `true` | Check records at the zone's authoritative nameservers, falling back to the resolver |
+| `DDNS_DNS_SERVER` | system resolver | Resolver used to find the nameservers and as fallback: an IP address or hostname with an optional port, e.g. `1.1.1.1`, `dns.quad9.net` or `[2606:4700:4700::1111]:53` |
 | `DDNS_DRY_RUN` | `false` | Log what would be updated without calling the provider |
 | `DDNS_ENDPOINT` | provider default | Override the default account's update URL (testing) |
 | `DDNS_CONTACT_EMAIL` | — | Optional maintainer contact sent in the User-Agent (recommended by No-IP) |
@@ -319,8 +339,9 @@ On every interval, for each enabled family:
    answered returned the same public (globally routable) address.
 2. For each hostname, compare the address with the last known record. The
    last known record comes from a DNS lookup at startup and every
-   `DDNS_DNS_RECHECK_INTERVAL`, and from each successful update. DNS answers
-   that contain only non-public addresses (split-horizon DNS) are ignored.
+   `DDNS_DNS_RECHECK_INTERVAL` (at the zone's authoritative nameservers, see
+   above), and from each successful update. DNS answers that contain only
+   non-public addresses (split-horizon DNS) are ignored.
 3. If anything differs, send one update containing every detected family.
 
 ### mijn.host

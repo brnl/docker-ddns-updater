@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/brnl/docker-ddns-updater/internal/config"
+	"github.com/brnl/docker-ddns-updater/internal/dnscheck"
 	"github.com/brnl/docker-ddns-updater/internal/health"
 	"github.com/brnl/docker-ddns-updater/internal/ipdetect"
 	"github.com/brnl/docker-ddns-updater/internal/provider"
@@ -82,6 +83,16 @@ func run() error {
 	}
 	hostnames := cfg.Hostnames()
 
+	// Records are checked at the zone's authoritative nameservers (always
+	// current, no split-horizon), found and backed by the regular resolver.
+	recursive := newResolver(cfg.DNSServer, cfg.Timeout)
+	var resolver updater.Resolver = recursive
+	dnsCheck := "resolver"
+	if cfg.DNSAuthoritative {
+		resolver = dnscheck.New(recursive, cfg.Timeout, log)
+		dnsCheck = "authoritative nameservers"
+	}
+
 	var detectors []updater.Detector
 	if cfg.IPv4Enabled {
 		detectors = append(detectors, ipdetect.New(ipdetect.IPv4, cfg.IPv4Sources, cfg.Timeout, userAgent, log))
@@ -105,6 +116,7 @@ func run() error {
 		"timeout", cfg.Timeout.String(),
 		"dns_recheck_interval", cfg.DNSRecheckInterval.String(),
 		"dns_server", cmp.Or(cfg.DNSServer, "system resolver"),
+		"dns_check", dnsCheck,
 		"heartbeat_interval", cfg.Heartbeat.String(),
 		"log_level", cfg.LogLevel,
 		"user_agent", userAgent,
@@ -126,7 +138,7 @@ func run() error {
 		Detectors:          detectors,
 		Interval:           cfg.Interval,
 		DNSRecheckInterval: cfg.DNSRecheckInterval,
-		Resolver:           newResolver(cfg.DNSServer, cfg.Timeout),
+		Resolver:           resolver,
 		Health:             status,
 		DryRun:             cfg.DryRun,
 		Logger:             log,
@@ -145,6 +157,7 @@ func run() error {
 				IPv6Sources:        sourcesIf(cfg.IPv6Enabled, cfg.IPv6Sources),
 				Interval:           cfg.Interval,
 				DNSRecheckInterval: cfg.DNSRecheckInterval,
+				DNSCheck:           dnsCheck,
 				DryRun:             cfg.DryRun,
 				Started:            time.Now(),
 			},
@@ -180,7 +193,7 @@ func newLogger(cfg *config.Config) *slog.Logger {
 // newResolver returns the system resolver, or one that sends all queries to
 // server (a host:port normalized by config). A hostname in server is resolved
 // once per connection with the system resolver.
-func newResolver(server string, timeout time.Duration) updater.Resolver {
+func newResolver(server string, timeout time.Duration) dnscheck.Recursive {
 	if server == "" {
 		return net.DefaultResolver
 	}
@@ -202,6 +215,15 @@ func newResolver(server string, timeout time.Duration) updater.Resolver {
 type fixedServerResolver struct {
 	r      *net.Resolver
 	server string
+}
+
+func (f fixedServerResolver) LookupNS(ctx context.Context, name string) ([]*net.NS, error) {
+	ns, err := f.r.LookupNS(ctx, name)
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		dnsErr.Server = f.server
+	}
+	return ns, err
 }
 
 func (f fixedServerResolver) LookupNetIP(ctx context.Context, network, host string) ([]netip.Addr, error) {

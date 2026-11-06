@@ -266,6 +266,9 @@
     "dnsRecheckInterval": {
       "$ref": "#/definitions/duration"
     },
+    "dnsAuthoritative": {
+      "type": "boolean"
+    },
     "dnsServer": {
       "type": "string",
       "pattern": "^$|^[^\\s/]+$"
