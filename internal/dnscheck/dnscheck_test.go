@@ -12,6 +12,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/brnl/docker-ddns-updater/internal/ipdetect"
 )
 
 // authServer is a minimal authoritative DNS server over UDP for tests.
@@ -201,6 +203,7 @@ func newFixture(t *testing.T) *fixture {
 	}
 	f.r = New(f.rec, 2*time.Second, slog.New(slog.NewTextHandler(f.logs, nil)))
 	f.r.port = srv.port()
+	f.r.usable = func(netip.Addr) bool { return true } // test servers are on loopback
 	f.r.now = func() time.Time { return f.now }
 	srv.set("home.example.com.", netip.MustParseAddr("203.0.113.7"), netip.MustParseAddr("2001:db8::7"))
 	return f
@@ -429,5 +432,20 @@ func TestNameserversSharedPerZone(t *testing.T) {
 	}
 	if n := strings.Count(f.logs.String(), "checking DNS records at the authoritative nameservers"); n != 1 {
 		t.Errorf("nameservers logged %d times, want once per zone", n)
+	}
+}
+
+func TestNonPublicNameserversAreNotQueried(t *testing.T) {
+	f := newFixture(t)
+	f.r.usable = ipdetect.IsPublic // the production filter
+	got, err := f.r.LookupNetIP(context.Background(), "ip4", "home.example.com")
+	if err != nil || got[0] != netip.MustParseAddr("198.51.100.1") {
+		t.Fatalf("got %v, %v; want the resolver fallback", got, err)
+	}
+	if q := f.srv.seen(); len(q) != 0 {
+		t.Errorf("queried a loopback nameserver: %v", q)
+	}
+	if !strings.Contains(f.logs.String(), "no public address found for the nameservers of example.com") {
+		t.Errorf("reason not logged: %s", f.logs.String())
 	}
 }

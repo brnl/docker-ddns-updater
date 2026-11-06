@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/brnl/docker-ddns-updater/internal/condlog"
+	"github.com/brnl/docker-ddns-updater/internal/ipdetect"
 )
 
 const (
@@ -47,6 +48,10 @@ type Resolver struct {
 	now       func() time.Time
 	// port is the nameservers' DNS port; tests override it.
 	port string
+	// usable reports whether a nameserver address may be queried: only
+	// public ones, so a (spoofed) NS record cannot point queries at
+	// internal services. Tests override it.
+	usable func(netip.Addr) bool
 
 	mu       sync.Mutex
 	hosts    map[string]*hostEntry       // hostname -> its zone
@@ -90,6 +95,7 @@ func New(recursive Recursive, timeout time.Duration, log *slog.Logger) *Resolver
 		log:       log,
 		now:       time.Now,
 		port:      "53",
+		usable:    ipdetect.IsPublic,
 		hosts:     map[string]*hostEntry{},
 		zones:     map[string]*zoneEntry{},
 		fallback:  map[string]*condlog.Tracker{},
@@ -235,6 +241,9 @@ func (r *Resolver) zoneNameservers(ctx context.Context, zone string) *zoneEntry 
 		}
 		for _, a := range addrs {
 			a = a.Unmap()
+			if !r.usable(a) {
+				continue
+			}
 			hp := net.JoinHostPort(a.String(), r.port)
 			if a.Is4() {
 				v4 = append(v4, hp)
@@ -247,7 +256,7 @@ func (r *Resolver) zoneNameservers(ctx context.Context, zone string) *zoneEntry 
 	// IPv4 first: IPv6 egress is often unavailable in containers.
 	z.servers = append(v4, v6...)
 	if len(z.servers) == 0 {
-		z.err = fmt.Errorf("no address found for the nameservers of %s (%s)", zone, strings.Join(z.nameservers, ", "))
+		z.err = fmt.Errorf("no public address found for the nameservers of %s (%s)", zone, strings.Join(z.nameservers, ", "))
 		z.expires = r.now().Add(negativeTTL)
 	}
 	return z
