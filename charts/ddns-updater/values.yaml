@@ -85,11 +85,15 @@ timeout: 10s
 # -- How often to compare the published DNS records with the detected IP
 # ("0" = only at startup).
 dnsRecheckInterval: 5m
-# -- DNS server for record lookups: an IP address or hostname with an optional
-# port, e.g. "1.1.1.1", "dns.quad9.net" or "[2606:4700:4700::1111]:53".
-# Empty uses the cluster DNS. Set this with split-horizon DNS (the cluster
-# resolves your hostnames to internal addresses): non-public answers are
-# ignored, so the public record can then only be verified via this server.
+# -- Check the published records at the zone's authoritative nameservers
+# (found via the resolver below), so the check always sees the provider's
+# current data instead of a cached or split-horizon answer. Falls back to the
+# resolver when that is not possible (e.g. outbound port 53 is blocked).
+dnsAuthoritative: true
+# -- Resolver used to find the authoritative nameservers and as fallback
+# (or for all lookups with dnsAuthoritative: false): an IP address or
+# hostname with an optional port, e.g. "1.1.1.1", "dns.quad9.net" or
+# "[2606:4700:4700::1111]:53". Empty uses the cluster DNS.
 dnsServer: ""
 # -- Log what would be updated without calling the provider.
 dryRun: false

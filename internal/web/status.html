@@ -60,7 +60,7 @@
       {{range .Info.Accounts}}<dt>Account {{.Name}}</dt><dd>{{.Provider}} · {{.Hostnames}} hostname{{if ne .Hostnames 1}}s{{end}}</dd>
       {{end}}
       <dt>Check interval</dt><dd>every {{duration .Info.Interval}}</dd>
-      <dt>DNS re-check</dt><dd>{{if .Info.DNSRecheckInterval}}every {{duration .Info.DNSRecheckInterval}}{{else}}at startup only{{end}}</dd>
+      <dt>DNS re-check</dt><dd>{{if .Info.DNSRecheckInterval}}every {{duration .Info.DNSRecheckInterval}}{{else}}at startup only{{end}}{{with .Info.DNSCheck}}, via {{.}}{{end}}</dd>
       {{if .Info.IPv4Enabled}}<dt>IPv4 sources</dt><dd class="mono">{{join .Info.IPv4Sources ", "}}</dd>{{end}}
       {{if .Info.IPv6Enabled}}<dt>IPv6 sources</dt><dd class="mono">{{join .Info.IPv6Sources ", "}}</dd>{{end}}
       {{if .Info.DryRun}}<dt>Mode</dt><dd><span class="pill warn">Dry run</span></dd>{{end}}

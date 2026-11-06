@@ -57,7 +57,10 @@ type Config struct {
 	Timeout            time.Duration
 	DNSRecheckInterval time.Duration
 	DNSServer          string
-	Heartbeat          time.Duration
+	// DNSAuthoritative checks records at the zone's authoritative
+	// nameservers instead of (only) the resolver.
+	DNSAuthoritative bool
+	Heartbeat        time.Duration
 
 	DryRun     bool
 	ListenAddr string
@@ -82,6 +85,7 @@ func Load(lookup func(string) (string, bool)) (*Config, error) {
 		Timeout:            e.duration("DDNS_TIMEOUT", 10*time.Second),
 		DNSRecheckInterval: e.duration("DDNS_DNS_RECHECK_INTERVAL", 5*time.Minute),
 		DNSServer:          e.str("DDNS_DNS_SERVER", ""),
+		DNSAuthoritative:   e.bool("DDNS_DNS_AUTHORITATIVE", true),
 		Heartbeat:          e.duration("DDNS_HEARTBEAT_INTERVAL", time.Hour),
 		DryRun:             e.bool("DDNS_DRY_RUN", false),
 		ListenAddr:         e.str("DDNS_LISTEN_ADDR", ":8080"),

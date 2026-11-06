@@ -55,8 +55,10 @@ type Info struct {
 	IPv6Sources        []string      `json:"ipv6_sources,omitempty"`
 	Interval           time.Duration `json:"-"`
 	DNSRecheckInterval time.Duration `json:"-"`
-	DryRun             bool          `json:"dry_run"`
-	Started            time.Time     `json:"started"`
+	// DNSCheck says where published records are checked.
+	DNSCheck string    `json:"dns_check,omitempty"`
+	DryRun   bool      `json:"dry_run"`
+	Started  time.Time `json:"started"`
 }
 
 // Account describes one configured account (never its credentials).

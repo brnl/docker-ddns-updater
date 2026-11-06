@@ -28,7 +28,7 @@ func TestDefaults(t *testing.T) {
 	if len(c.Accounts) != 1 || c.Accounts[0].Name != "default" || c.Accounts[0].Provider != "mijnhost" || c.Interval != time.Minute || !c.IPv4Enabled || c.IPv6Enabled {
 		t.Errorf("unexpected defaults: %+v", c)
 	}
-	if len(c.IPv4Sources) != 2 || c.ListenAddr != ":8080" || !c.StatusPage || !c.Metrics || c.DNSRecheckInterval != 5*time.Minute || c.Heartbeat != time.Hour {
+	if len(c.IPv4Sources) != 2 || c.ListenAddr != ":8080" || !c.StatusPage || !c.Metrics || c.DNSRecheckInterval != 5*time.Minute || c.Heartbeat != time.Hour || !c.DNSAuthoritative {
 		t.Errorf("unexpected defaults: %+v", c)
 	}
 }
