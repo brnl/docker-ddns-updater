@@ -17,7 +17,7 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
 
 # Distroless "static": no shell, no package manager, only CA certificates,
 # tzdata and /etc/passwd. Runs as the unprivileged "nonroot" user (65532).
-FROM gcr.io/distroless/static-debian13:nonroot@sha256:18f4cc26c9ffa7f20a359298be7deadac5c607c8e03a02b8119f1a5fc2f82c99
+FROM gcr.io/distroless/static-debian13:nonroot@sha256:aafe993665bf6200db38a02c11a9351e782a84b6a45e7f33b6695638c88e3931
 ARG VERSION=dev
 LABEL org.opencontainers.image.title="ddns-updater" \
       org.opencontainers.image.description="Monitors the public IP address and updates DDNS records (mijn.host, No-IP) when it changes" \
